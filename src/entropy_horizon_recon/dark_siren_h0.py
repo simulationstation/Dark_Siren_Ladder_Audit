@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -1799,6 +1801,136 @@ def _event_logL_h0_grid_from_hierarchical_pe_samples(
     return logL
 
 
+def _effective_cpu_count() -> int:
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            return int(len(os.sched_getaffinity(0)))
+        except Exception:
+            pass
+    return int(os.cpu_count() or 1)
+
+
+_HIER_GR_H0_WORKER_STATE: dict[str, Any] | None = None
+
+
+def _init_hier_gr_h0_worker(state: dict[str, Any]) -> None:
+    global _HIER_GR_H0_WORKER_STATE  # noqa: PLW0603
+    _HIER_GR_H0_WORKER_STATE = state
+
+
+def _hier_gr_h0_terms_worker(ev: str) -> dict[str, Any]:
+    """Worker for per-event hierarchical PE terms (fork-safe via global state)."""
+    global _HIER_GR_H0_WORKER_STATE  # noqa: PLW0603
+    s = _HIER_GR_H0_WORKER_STATE
+    if s is None:
+        raise RuntimeError("Hierarchical GR H0 worker state not initialized.")
+
+    pe_by_event: dict[str, GWTCPeHierarchicalSamples] = s["pe_by_event"]
+    pe = pe_by_event[str(ev)]
+
+    H0_grid = np.asarray(s["H0_grid"], dtype=float)
+    want_meta = {
+        "event": str(ev),
+        "pe_file": str(pe.file),
+        "pe_analysis": str(pe.analysis),
+        "n_samples": int(pe.n_used),
+        "omega_m0": float(s["omega_m0"]),
+        "omega_k0": float(s["omega_k0"]),
+        "z_max": float(s["z_max"]),
+        "H0_grid": [float(x) for x in H0_grid.tolist()],
+        "pop_z_mode": str(s["pop_z_mode"]),
+        "pop_z_k": float(s["pop_z_k"]),
+        "pop_mass_mode": str(s["pop_mass_mode"]),
+        "pop_m1_alpha": float(s["pop_m1_alpha"]),
+        "pop_m_min": float(s["pop_m_min"]),
+        "pop_m_max": float(s["pop_m_max"]),
+        "pop_q_beta": float(s["pop_q_beta"]),
+        "pop_m_taper_delta": float(s["pop_m_taper_delta"]),
+        "pop_m_peak": float(s["pop_m_peak"]),
+        "pop_m_peak_sigma": float(s["pop_m_peak_sigma"]),
+        "pop_m_peak_frac": float(s["pop_m_peak_frac"]),
+        "include_pdet_in_event_term": bool(s["include_pdet_in_event_term"]),
+        "pop_z_include_h0_volume_scaling": bool(s["pop_z_include_h0_volume_scaling"]),
+        "importance_smoothing": str(s["importance_smoothing"]),
+        "importance_truncate_tau": float(s["importance_truncate_tau"]) if s["importance_truncate_tau"] is not None else None,
+        "pdet_model": s["pdet_model_meta"] if bool(s["include_pdet_in_event_term"]) else None,
+    }
+
+    cache_hit = False
+    cache_path = None
+    cache_dir = s.get("cache_dir_path")
+    if cache_dir is not None:
+        cache_path = Path(str(cache_dir)) / f"{str(ev)}__hier_gr_h0_terms.npz"
+        if cache_path.exists():
+            try:
+                with np.load(cache_path, allow_pickle=True) as d:
+                    meta_m = json.loads(str(d["meta"].tolist()))
+                    if meta_m == want_meta:
+                        cache_hit = True
+                        logL_ev = np.asarray(d["logL_H0"], dtype=float)
+                        ess_ev = np.asarray(d["ess"], dtype=float) if "ess" in d else None
+                        n_good_ev = np.asarray(d["n_good"], dtype=float) if "n_good" in d else None
+                        return {
+                            "event": str(ev),
+                            "pe_file": str(pe.file),
+                            "pe_analysis": str(pe.analysis),
+                            "pe_n_samples": int(pe.n_used),
+                            "cache_hit": True,
+                            "logL_ev": logL_ev,
+                            "ess_ev": ess_ev,
+                            "n_good_ev": n_good_ev,
+                        }
+            except Exception:
+                cache_hit = False
+
+    out = _event_logL_h0_grid_from_hierarchical_pe_samples(
+        pe=pe,
+        H0_grid=H0_grid,
+        dist_cache=s["dist_cache"],
+        constants=s["constants"],
+        z_max=float(s["z_max"]),
+        det_model=s.get("det_model_obj"),
+        include_pdet_in_event_term=bool(s["include_pdet_in_event_term"]),
+        pop_z_include_h0_volume_scaling=bool(s["pop_z_include_h0_volume_scaling"]),
+        pop_z_mode=str(s["pop_z_mode"]),  # type: ignore[arg-type]
+        pop_z_k=float(s["pop_z_k"]),
+        pop_mass_mode=str(s["pop_mass_mode"]),  # type: ignore[arg-type]
+        pop_m1_alpha=float(s["pop_m1_alpha"]),
+        pop_m_min=float(s["pop_m_min"]),
+        pop_m_max=float(s["pop_m_max"]),
+        pop_q_beta=float(s["pop_q_beta"]),
+        pop_m_taper_delta=float(s["pop_m_taper_delta"]),
+        pop_m_peak=float(s["pop_m_peak"]),
+        pop_m_peak_sigma=float(s["pop_m_peak_sigma"]),
+        pop_m_peak_frac=float(s["pop_m_peak_frac"]),
+        importance_smoothing=str(s["importance_smoothing"]),  # type: ignore[arg-type]
+        importance_truncate_tau=float(s["importance_truncate_tau"]) if s["importance_truncate_tau"] is not None else None,
+        return_diagnostics=True,
+    )
+    assert isinstance(out, tuple)
+    logL_ev, ess_ev, n_good_ev = out
+
+    if cache_path is not None:
+        np.savez(
+            cache_path,
+            meta=json.dumps(want_meta, sort_keys=True),
+            logL_H0=np.asarray(logL_ev, dtype=np.float64),
+            ess=np.asarray(ess_ev, dtype=np.float64) if ess_ev is not None else np.asarray([], dtype=np.float64),
+            n_good=np.asarray(n_good_ev, dtype=np.float64) if n_good_ev is not None else np.asarray([], dtype=np.float64),
+        )
+
+    return {
+        "event": str(ev),
+        "pe_file": str(pe.file),
+        "pe_analysis": str(pe.analysis),
+        "pe_n_samples": int(pe.n_used),
+        "cache_hit": bool(cache_hit),
+        "logL_ev": np.asarray(logL_ev, dtype=float),
+        "ess_ev": np.asarray(ess_ev, dtype=float) if ess_ev is not None else None,
+        "n_good_ev": np.asarray(n_good_ev, dtype=float) if n_good_ev is not None else None,
+    }
+
+
 def compute_gr_h0_posterior_grid_hierarchical_pe(
     *,
     pe_by_event: dict[str, GWTCPeHierarchicalSamples],
@@ -1807,6 +1939,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
     omega_k0: float,
     z_max: float,
     cache_dir: str | Path | None = None,
+    n_processes: int | None = None,
     include_pdet_in_event_term: bool = False,
     pdet_model: CalibratedDetectionModel | None = None,
     pop_z_include_h0_volume_scaling: bool = False,
@@ -1899,21 +2032,44 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
     if not (np.isfinite(event_min_finite_frac) and 0.0 <= event_min_finite_frac <= 1.0):
         raise ValueError("event_min_finite_frac must be finite and in [0,1].")
 
+    pdet_model_meta = None
+    if bool(include_pdet_in_event_term):
+        pdet_model_meta = {
+            "det_model": str(det_model_obj.det_model) if det_model_obj is not None else None,
+            "snr_threshold": float(det_model_obj.snr_threshold)
+            if det_model_obj is not None and det_model_obj.snr_threshold is not None
+            else None,
+            "snr_binned_nbins": int(snr_binned_nbins),
+            "mchirp_binned_nbins": int(mchirp_binned_nbins),
+        }
+
     per_event: list[dict[str, Any]] = []
     skipped_events: list[dict[str, Any]] = []
     logL_sum_events = np.zeros_like(H0_grid, dtype=float)
 
-    for ev in sorted(pe_by_event.keys()):
-        pe = pe_by_event[ev]
-        want_meta = {
-            "event": str(ev),
-            "pe_file": str(pe.file),
-            "pe_analysis": str(pe.analysis),
-            "n_samples": int(pe.n_used),
+    n_proc_eff = 1
+    if n_processes is not None:
+        n_proc_eff = int(n_processes)
+        if n_proc_eff <= 0:
+            n_proc_eff = _effective_cpu_count()
+    n_proc_eff = max(1, min(n_proc_eff, int(len(pe_by_event))))
+
+    events_sorted = [str(ev) for ev in sorted(pe_by_event.keys())]
+
+    if n_proc_eff > 1 and len(events_sorted) > 1:
+        worker_state: dict[str, Any] = {
+            "pe_by_event": pe_by_event,
+            "H0_grid": H0_grid,
             "omega_m0": float(omega_m0),
             "omega_k0": float(omega_k0),
             "z_max": float(z_max),
-            "H0_grid": [float(x) for x in H0_grid.tolist()],
+            "dist_cache": dist_cache,
+            "constants": constants,
+            "cache_dir_path": cache_dir_path,
+            "det_model_obj": det_model_obj,
+            "pdet_model_meta": pdet_model_meta,
+            "include_pdet_in_event_term": bool(include_pdet_in_event_term),
+            "pop_z_include_h0_volume_scaling": bool(pop_z_include_h0_volume_scaling),
             "pop_z_mode": str(pop_z_mode),
             "pop_z_k": float(pop_z_powerlaw_k),
             "pop_mass_mode": str(pop_mass_mode),
@@ -1925,139 +2081,234 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
             "pop_m_peak": float(pop_m_peak),
             "pop_m_peak_sigma": float(pop_m_peak_sigma),
             "pop_m_peak_frac": float(pop_m_peak_frac),
-            "include_pdet_in_event_term": bool(include_pdet_in_event_term),
-            "pop_z_include_h0_volume_scaling": bool(pop_z_include_h0_volume_scaling),
             "importance_smoothing": str(importance_smoothing),
             "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
-            "pdet_model": {
-                "det_model": str(det_model_obj.det_model) if det_model_obj is not None else None,
-                "snr_threshold": float(det_model_obj.snr_threshold) if det_model_obj is not None and det_model_obj.snr_threshold is not None else None,
-                "snr_binned_nbins": int(snr_binned_nbins),
-                "mchirp_binned_nbins": int(mchirp_binned_nbins),
-            }
-            if bool(include_pdet_in_event_term)
-            else None,
         }
 
-        cache_path: Path | None = None
-        if cache_dir_path is not None:
-            cache_path = cache_dir_path / f"{str(ev)}__hier_gr_h0_terms.npz"
+        try:
+            ctx = mp.get_context("fork")
+        except Exception:
+            ctx = mp.get_context()
 
-        logL_ev: np.ndarray | None = None
-        ess_ev: np.ndarray | None = None
-        n_good_ev: np.ndarray | None = None
-        cache_hit = False
-        if cache_path is not None and cache_path.exists():
-            try:
-                with np.load(cache_path, allow_pickle=True) as d:
-                    meta_m = json.loads(str(d["meta"].tolist()))
-                    if meta_m == want_meta:
-                        logL_ev = np.asarray(d["logL_H0"], dtype=float)
-                        if "ess" in d and "n_good" in d:
-                            ess_ev = np.asarray(d["ess"], dtype=float)
-                            n_good_ev = np.asarray(d["n_good"], dtype=float)
-                        cache_hit = True
-            except Exception:
-                logL_ev = None
-                ess_ev = None
-                n_good_ev = None
-                cache_hit = False
+        results: list[dict[str, Any]]
+        with ctx.Pool(processes=int(n_proc_eff), initializer=_init_hier_gr_h0_worker, initargs=(worker_state,)) as pool:
+            results = pool.map(_hier_gr_h0_terms_worker, events_sorted)
 
-        if logL_ev is None:
-            out = _event_logL_h0_grid_from_hierarchical_pe_samples(
-                pe=pe,
-                H0_grid=H0_grid,
-                dist_cache=dist_cache,
-                constants=constants,
-                z_max=float(z_max),
-                det_model=det_model_obj,
-                include_pdet_in_event_term=bool(include_pdet_in_event_term),
-                pop_z_include_h0_volume_scaling=bool(pop_z_include_h0_volume_scaling),
-                pop_z_mode=pop_z_mode,
-                pop_z_k=float(pop_z_powerlaw_k),
-                pop_mass_mode=pop_mass_mode,
-                pop_m1_alpha=float(pop_m1_alpha),
-                pop_m_min=float(pop_m_min),
-                pop_m_max=float(pop_m_max),
-                pop_q_beta=float(pop_q_beta),
-                pop_m_taper_delta=float(pop_m_taper_delta),
-                pop_m_peak=float(pop_m_peak),
-                pop_m_peak_sigma=float(pop_m_peak_sigma),
-                pop_m_peak_frac=float(pop_m_peak_frac),
-                importance_smoothing=importance_smoothing,
-                importance_truncate_tau=importance_truncate_tau,
-                return_diagnostics=True,
-            )
-            assert isinstance(out, tuple)
-            logL_ev, ess_ev, n_good_ev = out
+        for r in results:
+            ev = str(r["event"])
+            logL_ev = np.asarray(r["logL_ev"], dtype=float)
+            ess_ev = r.get("ess_ev")
+            n_good_ev = r.get("n_good_ev")
+            ess_ev_arr = np.asarray(ess_ev, dtype=float) if ess_ev is not None else None
+            n_good_ev_arr = np.asarray(n_good_ev, dtype=float) if n_good_ev is not None else None
+            cache_hit = bool(r.get("cache_hit", False))
 
-            if cache_path is not None:
-                np.savez(
-                    cache_path,
-                    meta=json.dumps(want_meta, sort_keys=True),
-                    logL_H0=np.asarray(logL_ev, dtype=np.float64),
-                    ess=np.asarray(ess_ev, dtype=np.float64),
-                    n_good=np.asarray(n_good_ev, dtype=np.float64),
+            if not np.any(np.isfinite(logL_ev)):
+                rec = {
+                    "event": str(ev),
+                    "reason": "no_finite_logL_across_H0_grid",
+                    "pe_file": str(r.get("pe_file", "")),
+                    "pe_analysis": str(r.get("pe_analysis", "")),
+                    "pe_n_samples": int(r.get("pe_n_samples", -1)),
+                    "cache_hit": bool(cache_hit),
+                }
+                if event_qc_mode == "skip":
+                    skipped_events.append(rec)
+                    continue
+                raise ValueError(
+                    f"{ev}: no finite logL across the provided H0 grid under the current population/z_max assumptions. "
+                    f"Either widen z_max/H0_grid, loosen population bounds (e.g. mass limits), or run with event_qc_mode='skip'."
                 )
 
-        if not np.any(np.isfinite(np.asarray(logL_ev, dtype=float))):
-            # This event has zero support under the specified (z_max, population) assumptions across the full H0 grid.
-            # This most commonly occurs when the chosen population is a BBH-only model but the event is likely NSBH/BNS,
-            # or when z_max is too small for the event's distance support.
-            rec = {
-                "event": str(ev),
-                "reason": "no_finite_logL_across_H0_grid",
-                "pe_file": str(pe.file),
-                "pe_analysis": str(pe.analysis),
-                "pe_n_samples": int(pe.n_used),
-                "cache_hit": bool(cache_hit),
-            }
-            if event_qc_mode == "skip":
-                skipped_events.append(rec)
-                continue
-            raise ValueError(
-                f"{ev}: no finite logL across the provided H0 grid under the current population/z_max assumptions. "
-                f"Either widen z_max/H0_grid, loosen population bounds (e.g. mass limits), or run with event_qc_mode='skip'."
-            )
+            fin = np.isfinite(logL_ev)
+            fin_frac = float(np.mean(fin.astype(float))) if fin.size else 0.0
+            if fin_frac < event_min_finite_frac:
+                rec = {
+                    "event": str(ev),
+                    "reason": "insufficient_finite_support_across_H0_grid",
+                    "finite_frac": fin_frac,
+                    "pe_file": str(r.get("pe_file", "")),
+                    "pe_analysis": str(r.get("pe_analysis", "")),
+                    "pe_n_samples": int(r.get("pe_n_samples", -1)),
+                    "cache_hit": bool(cache_hit),
+                }
+                if event_qc_mode == "skip":
+                    skipped_events.append(rec)
+                    continue
+                raise ValueError(
+                    f"{ev}: finite support fraction across H0 grid is {fin_frac:.3f}, below event_min_finite_frac={event_min_finite_frac:.3f}. "
+                    "This usually indicates a population mismatch (hard support cutoffs) or an H0 grid/z_max that exceeds the event's mapped support."
+                )
 
-        fin = np.isfinite(np.asarray(logL_ev, dtype=float))
-        fin_frac = float(np.mean(fin.astype(float))) if fin.size else 0.0
-        if fin_frac < event_min_finite_frac:
-            rec = {
-                "event": str(ev),
-                "reason": "insufficient_finite_support_across_H0_grid",
-                "finite_frac": fin_frac,
-                "pe_file": str(pe.file),
-                "pe_analysis": str(pe.analysis),
-                "pe_n_samples": int(pe.n_used),
-                "cache_hit": bool(cache_hit),
-            }
-            if event_qc_mode == "skip":
-                skipped_events.append(rec)
-                continue
-            raise ValueError(
-                f"{ev}: finite support fraction across H0 grid is {fin_frac:.3f}, below event_min_finite_frac={event_min_finite_frac:.3f}. "
-                "This usually indicates a population mismatch (hard support cutoffs) or an H0 grid/z_max that exceeds the event's mapped support."
+            per_event.append(
+                {
+                    "event": str(ev),
+                    "pe_file": str(r.get("pe_file", "")),
+                    "pe_analysis": str(r.get("pe_analysis", "")),
+                    "pe_n_samples": int(r.get("pe_n_samples", -1)),
+                    "cache_hit": bool(cache_hit),
+                    "include_pdet_in_event_term": bool(include_pdet_in_event_term),
+                    "pop_z_include_h0_volume_scaling": bool(pop_z_include_h0_volume_scaling),
+                    "importance_smoothing": str(importance_smoothing),
+                    "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
+                    "logL_H0": [float(x) for x in logL_ev.tolist()],
+                    "ess_min": float(np.nanmin(ess_ev_arr)) if ess_ev_arr is not None and ess_ev_arr.size else float("nan"),
+                    "n_good_min": float(np.nanmin(n_good_ev_arr)) if n_good_ev_arr is not None and n_good_ev_arr.size else float("nan"),
+                    "finite_frac": fin_frac,
+                }
             )
+            logL_sum_events = logL_sum_events + logL_ev
 
-        per_event.append(
-            {
+    else:
+        for ev in events_sorted:
+            pe = pe_by_event[ev]
+            want_meta = {
                 "event": str(ev),
                 "pe_file": str(pe.file),
                 "pe_analysis": str(pe.analysis),
-                "pe_n_samples": int(pe.n_used),
-                "cache_hit": bool(cache_hit),
+                "n_samples": int(pe.n_used),
+                "omega_m0": float(omega_m0),
+                "omega_k0": float(omega_k0),
+                "z_max": float(z_max),
+                "H0_grid": [float(x) for x in H0_grid.tolist()],
+                "pop_z_mode": str(pop_z_mode),
+                "pop_z_k": float(pop_z_powerlaw_k),
+                "pop_mass_mode": str(pop_mass_mode),
+                "pop_m1_alpha": float(pop_m1_alpha),
+                "pop_m_min": float(pop_m_min),
+                "pop_m_max": float(pop_m_max),
+                "pop_q_beta": float(pop_q_beta),
+                "pop_m_taper_delta": float(pop_m_taper_delta),
+                "pop_m_peak": float(pop_m_peak),
+                "pop_m_peak_sigma": float(pop_m_peak_sigma),
+                "pop_m_peak_frac": float(pop_m_peak_frac),
                 "include_pdet_in_event_term": bool(include_pdet_in_event_term),
                 "pop_z_include_h0_volume_scaling": bool(pop_z_include_h0_volume_scaling),
                 "importance_smoothing": str(importance_smoothing),
                 "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
-                "logL_H0": [float(x) for x in np.asarray(logL_ev, dtype=float).tolist()],
-                "ess_min": float(np.nanmin(np.asarray(ess_ev, dtype=float))) if ess_ev is not None and ess_ev.size else float("nan"),
-                "n_good_min": float(np.nanmin(np.asarray(n_good_ev, dtype=float))) if n_good_ev is not None and n_good_ev.size else float("nan"),
-                "finite_frac": fin_frac,
+                "pdet_model": pdet_model_meta,
             }
-        )
-        logL_sum_events = logL_sum_events + np.asarray(logL_ev, dtype=float)
+
+            cache_path: Path | None = None
+            if cache_dir_path is not None:
+                cache_path = cache_dir_path / f"{str(ev)}__hier_gr_h0_terms.npz"
+
+            logL_ev: np.ndarray | None = None
+            ess_ev: np.ndarray | None = None
+            n_good_ev: np.ndarray | None = None
+            cache_hit = False
+            if cache_path is not None and cache_path.exists():
+                try:
+                    with np.load(cache_path, allow_pickle=True) as d:
+                        meta_m = json.loads(str(d["meta"].tolist()))
+                        if meta_m == want_meta:
+                            logL_ev = np.asarray(d["logL_H0"], dtype=float)
+                            if "ess" in d and "n_good" in d:
+                                ess_ev = np.asarray(d["ess"], dtype=float)
+                                n_good_ev = np.asarray(d["n_good"], dtype=float)
+                            cache_hit = True
+                except Exception:
+                    logL_ev = None
+                    ess_ev = None
+                    n_good_ev = None
+                    cache_hit = False
+
+            if logL_ev is None:
+                out = _event_logL_h0_grid_from_hierarchical_pe_samples(
+                    pe=pe,
+                    H0_grid=H0_grid,
+                    dist_cache=dist_cache,
+                    constants=constants,
+                    z_max=float(z_max),
+                    det_model=det_model_obj,
+                    include_pdet_in_event_term=bool(include_pdet_in_event_term),
+                    pop_z_include_h0_volume_scaling=bool(pop_z_include_h0_volume_scaling),
+                    pop_z_mode=pop_z_mode,
+                    pop_z_k=float(pop_z_powerlaw_k),
+                    pop_mass_mode=pop_mass_mode,
+                    pop_m1_alpha=float(pop_m1_alpha),
+                    pop_m_min=float(pop_m_min),
+                    pop_m_max=float(pop_m_max),
+                    pop_q_beta=float(pop_q_beta),
+                    pop_m_taper_delta=float(pop_m_taper_delta),
+                    pop_m_peak=float(pop_m_peak),
+                    pop_m_peak_sigma=float(pop_m_peak_sigma),
+                    pop_m_peak_frac=float(pop_m_peak_frac),
+                    importance_smoothing=importance_smoothing,
+                    importance_truncate_tau=importance_truncate_tau,
+                    return_diagnostics=True,
+                )
+                assert isinstance(out, tuple)
+                logL_ev, ess_ev, n_good_ev = out
+
+                if cache_path is not None:
+                    np.savez(
+                        cache_path,
+                        meta=json.dumps(want_meta, sort_keys=True),
+                        logL_H0=np.asarray(logL_ev, dtype=np.float64),
+                        ess=np.asarray(ess_ev, dtype=np.float64),
+                        n_good=np.asarray(n_good_ev, dtype=np.float64),
+                    )
+
+            if not np.any(np.isfinite(np.asarray(logL_ev, dtype=float))):
+                rec = {
+                    "event": str(ev),
+                    "reason": "no_finite_logL_across_H0_grid",
+                    "pe_file": str(pe.file),
+                    "pe_analysis": str(pe.analysis),
+                    "pe_n_samples": int(pe.n_used),
+                    "cache_hit": bool(cache_hit),
+                }
+                if event_qc_mode == "skip":
+                    skipped_events.append(rec)
+                    continue
+                raise ValueError(
+                    f"{ev}: no finite logL across the provided H0 grid under the current population/z_max assumptions. "
+                    f"Either widen z_max/H0_grid, loosen population bounds (e.g. mass limits), or run with event_qc_mode='skip'."
+                )
+
+            fin = np.isfinite(np.asarray(logL_ev, dtype=float))
+            fin_frac = float(np.mean(fin.astype(float))) if fin.size else 0.0
+            if fin_frac < event_min_finite_frac:
+                rec = {
+                    "event": str(ev),
+                    "reason": "insufficient_finite_support_across_H0_grid",
+                    "finite_frac": fin_frac,
+                    "pe_file": str(pe.file),
+                    "pe_analysis": str(pe.analysis),
+                    "pe_n_samples": int(pe.n_used),
+                    "cache_hit": bool(cache_hit),
+                }
+                if event_qc_mode == "skip":
+                    skipped_events.append(rec)
+                    continue
+                raise ValueError(
+                    f"{ev}: finite support fraction across H0 grid is {fin_frac:.3f}, below event_min_finite_frac={event_min_finite_frac:.3f}. "
+                    "This usually indicates a population mismatch (hard support cutoffs) or an H0 grid/z_max that exceeds the event's mapped support."
+                )
+
+            per_event.append(
+                {
+                    "event": str(ev),
+                    "pe_file": str(pe.file),
+                    "pe_analysis": str(pe.analysis),
+                    "pe_n_samples": int(pe.n_used),
+                    "cache_hit": bool(cache_hit),
+                    "include_pdet_in_event_term": bool(include_pdet_in_event_term),
+                    "pop_z_include_h0_volume_scaling": bool(pop_z_include_h0_volume_scaling),
+                    "importance_smoothing": str(importance_smoothing),
+                    "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
+                    "logL_H0": [float(x) for x in np.asarray(logL_ev, dtype=float).tolist()],
+                    "ess_min": float(np.nanmin(np.asarray(ess_ev, dtype=float)))
+                    if ess_ev is not None and ess_ev.size
+                    else float("nan"),
+                    "n_good_min": float(np.nanmin(np.asarray(n_good_ev, dtype=float)))
+                    if n_good_ev is not None and n_good_ev.size
+                    else float("nan"),
+                    "finite_frac": fin_frac,
+                }
+            )
+            logL_sum_events = logL_sum_events + np.asarray(logL_ev, dtype=float)
 
     logL_total = np.asarray(logL_sum_events, dtype=float)
     alpha_grid: np.ndarray | None = None
@@ -2127,6 +2378,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
         "omega_m0": float(omega_m0),
         "omega_k0": float(omega_k0),
         "z_max": float(z_max),
+        "n_processes": int(n_proc_eff),
         "n_events": int(len(per_event)),
         "n_events_skipped": int(len(skipped_events)),
         "events": per_event,

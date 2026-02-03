@@ -17,6 +17,7 @@
 /void_latest_report.md
 /FINAL_FIGURES/
 /.pid
+/pid.txt
 /wget-log*
 
 # local one-off artifacts / scratch (keep out of git)

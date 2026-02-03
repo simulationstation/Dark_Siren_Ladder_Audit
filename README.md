@@ -34,6 +34,14 @@ Then you can compare `alpha(H0)` computed with our distance cache vs wcosmo vs I
   --plot
 ```
 
+## Run log (GR vs mu)
+
+Many siren tests in this repo score **mu (entropy-modified)** vs **GR** using a total ΔLPD metric. To keep comparisons auditable across many detached runs, build a single CSV from finished output folders:
+
+```bash
+./.venv/bin/python scripts/build_run_log.py --outputs outputs --out FINDINGS/run_log.csv
+```
+
 ## Third-party software
 
 This project uses (and optionally benchmarks against) open-source gravitational-wave community software, including:

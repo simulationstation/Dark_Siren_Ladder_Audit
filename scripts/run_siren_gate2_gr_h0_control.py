@@ -215,6 +215,12 @@ def main() -> int:
         default=None,
         help="Truncation tau for --importance-smoothing=truncate (default sqrt(n)).",
     )
+    ap.add_argument(
+        "--n-proc",
+        type=int,
+        default=0,
+        help="Processes for per-event hierarchical PE term computation (0=auto; default 0).",
+    )
 
     ap.add_argument("--smoke", action="store_true", help="Seconds-scale smoke mode (shrinks event count + grid).")
     ap.add_argument("--out", default=None, help="Output directory (default outputs/siren_gate2_gr_h0_<UTCSTAMP>).")
@@ -323,6 +329,7 @@ def main() -> int:
         omega_k0=float(args.omega_k0),
         z_max=float(z_max),
         cache_dir=cache_dir / "selection_off",
+        n_processes=int(args.n_proc),
         importance_smoothing=str(args.importance_smoothing),  # type: ignore[arg-type]
         importance_truncate_tau=float(args.importance_truncate_tau) if args.importance_truncate_tau is not None else None,
         injections=None,
@@ -371,6 +378,7 @@ def main() -> int:
             omega_k0=float(args.omega_k0),
             z_max=float(z_max),
             cache_dir=cache_dir / f"selection_on_{wm}",
+            n_processes=int(args.n_proc),
             importance_smoothing=str(args.importance_smoothing),  # type: ignore[arg-type]
             importance_truncate_tau=float(args.importance_truncate_tau) if args.importance_truncate_tau is not None else None,
             injections=injections,
@@ -436,6 +444,7 @@ def main() -> int:
         "omega_m0": float(args.omega_m0),
         "omega_k0": float(args.omega_k0),
         "z_max": float(z_max),
+        "n_processes": int(args.n_proc),
         "selection_injections_hdf": str(inj_path),
         "selection_ifar_thresh_yr": float(args.selection_ifar_thresh_yr),
         "det_model": str(args.det_model),
