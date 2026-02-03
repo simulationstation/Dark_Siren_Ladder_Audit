@@ -735,6 +735,7 @@ def run_injection_recovery_gr_h0(
     seed: int,
     selection_alpha_h0_grid: np.ndarray | None = None,
     selection_alpha_meta: dict[str, Any] | None = None,
+    n_processes: int | None = None,
     out_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """End-to-end synthetic injection-recovery for the GR H0 selection-on control.
@@ -824,6 +825,7 @@ def run_injection_recovery_gr_h0(
         omega_k0=float(cfg.omega_k0),
         z_max=float(cfg.z_max),
         cache_dir=None,
+        n_processes=n_processes,
         include_pdet_in_event_term=bool(cfg.include_pdet_in_event_term),
         pdet_model=det_model_obj if bool(cfg.include_pdet_in_event_term) else None,
         pop_z_include_h0_volume_scaling=bool(cfg.pop_z_include_h0_volume_scaling),

@@ -97,7 +97,7 @@ def _build_z_sampler(
     pdf = np.clip(pdf, 0.0, np.inf)
     # Drop z=0 exactly to avoid pathological dL=0 cases.
     pdf[0] = 0.0
-    area = float(np.trapz(pdf, z))
+    area = float(np.trapezoid(pdf, z))
     if not (np.isfinite(area) and area > 0.0):
         raise ValueError("Invalid z pdf normalization.")
     pdf = pdf / area

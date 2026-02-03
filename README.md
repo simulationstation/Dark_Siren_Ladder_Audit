@@ -69,6 +69,18 @@ Or scan all Gate‑2 outputs into a summary CSV:
 ./.venv/bin/python scripts/gate2_jig.py scan --outputs outputs --out FINDINGS/gate2_jig.csv
 ```
 
+## Gate‑2 ladder (toy cancellation + incremental complexity)
+
+To avoid “eternal knob turning”, `scripts/run_siren_gate2_ladder.py` runs:
+- a **known-answer toy cancellation check** (prior-only PE + p_det in numerator) and
+- a small **injection-recovery ladder** that adds complexity rung-by-rung (z prior, mass model, weight smoothing, detection model).
+
+```bash
+./.venv/bin/python scripts/run_siren_gate2_ladder.py --n-events 25 --pe-n-samples 5000 --n-proc 0
+```
+
+Outputs include `outputs/siren_gate2_ladder_*/ladder.csv` (quick scan) and `ladder_summary.json` (machine-readable).
+
 ## Third-party software
 
 This project uses (and optionally benchmarks against) open-source gravitational-wave community software, including:
