@@ -132,6 +132,9 @@ def _load_summary_from_rep(rep_path: Path) -> dict[str, Any]:
         "n_used_on": int(s.get("n_events_used_selection_on", -1)),
         "n_skipped_off": int(s.get("n_events_skipped_selection_off", -1)),
         "n_skipped_on": int(s.get("n_events_skipped_selection_on", -1)),
+        "gate2_pass": bool(on.get("gate2_pass", False)),
+        "H0_map_at_edge_off": bool(off.get("H0_map_at_edge", False)),
+        "H0_map_at_edge_on": bool(on.get("H0_map_at_edge", False)),
         "H0_map_off": _safe_float(s.get("selection_off", {}).get("H0_map")),
         "H0_map_on": _safe_float(s.get("selection_on", {}).get("H0_map")),
         "H0_p025_off": float(q025_off),
@@ -483,6 +486,9 @@ def main() -> int:
     bias = np.asarray([_safe_float(r["bias_p50_on"]) for r in rows], dtype=float)
     used_on = np.asarray([int(r["n_used_on"]) for r in rows], dtype=float)
     skipped_on = np.asarray([int(r["n_skipped_on"]) for r in rows], dtype=float)
+    gate2_pass = np.asarray([bool(r.get("gate2_pass", False)) for r in rows], dtype=bool)
+    edge_on = np.asarray([bool(r.get("H0_map_at_edge_on", False)) for r in rows], dtype=bool)
+    edge_off = np.asarray([bool(r.get("H0_map_at_edge_off", False)) for r in rows], dtype=bool)
     h0_true = float(args.h0_true)
     p16_on = np.asarray([_safe_float(r.get("H0_p16_on")) for r in rows], dtype=float)
     p84_on = np.asarray([_safe_float(r.get("H0_p84_on")) for r in rows], dtype=float)
@@ -512,6 +518,10 @@ def main() -> int:
         "used_on_min": int(np.nanmin(used_on)),
         "used_on_max": int(np.nanmax(used_on)),
         "skipped_on_mean": float(np.nanmean(skipped_on)),
+        "gate2_pass_n": int(np.sum(gate2_pass)),
+        "gate2_pass_frac": float(np.mean(gate2_pass.astype(float))),
+        "H0_map_at_edge_on_n": int(np.sum(edge_on)),
+        "H0_map_at_edge_off_n": int(np.sum(edge_off)),
         "coverage_68_on": cov68,
         "coverage_95_on": cov95,
         "pp_dL_ks_mean": float(np.nanmean(pp_dL_ks)),
@@ -521,6 +531,40 @@ def main() -> int:
         "note": "Calibration/audit diagnostic. For a well-calibrated synthetic PE generator, per-event truth percentiles (P–P) should be ~Uniform[0,1] and coverage_68_on should be near 0.68.",
     }
     _write_json(tab_dir / "suite_aggregate.json", agg)
+
+    # PASS/FAIL artifact (for audit gating / CI-style checks).
+    rep_pf: list[dict[str, Any]] = []
+    for r in rows:
+        reasons: list[str] = []
+        if int(r.get("n_skipped_on", 0)) > 0:
+            reasons.append("skipped_events_selection_on")
+        if bool(r.get("H0_map_at_edge_on", False)):
+            reasons.append("H0_map_at_edge_selection_on")
+        rep_pf.append(
+            {
+                "rep": int(r.get("rep", -1)),
+                "seed": int(r.get("seed", -1)),
+                "pass": bool(r.get("gate2_pass", False)),
+                "reasons": reasons,
+                "H0_map_on": _safe_float(r.get("H0_map_on")),
+                "bias_p50_on": _safe_float(r.get("bias_p50_on")),
+            }
+        )
+
+    pass_fail = {
+        "criteria": {
+            "gate2_pass": "Per-rep gate2_pass from gr_h0_selection_on (currently: not at H0 grid edge AND no skipped events).",
+            "reasons": "Convenience flags; extend/override for stricter gating as needed.",
+        },
+        "summary": {
+            "n_rep": int(len(rows)),
+            "n_pass": int(np.sum([bool(x["pass"]) for x in rep_pf])),
+            "n_fail": int(np.sum([not bool(x["pass"]) for x in rep_pf])),
+            "fail_reps": [int(x["rep"]) for x in rep_pf if not bool(x["pass"])],
+        },
+        "rep": rep_pf,
+    }
+    _write_json(tab_dir / "pass_fail.json", pass_fail)
 
     if _HAVE_MPL:
         assert plt is not None
