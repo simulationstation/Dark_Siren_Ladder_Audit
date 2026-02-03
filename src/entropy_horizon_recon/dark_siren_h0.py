@@ -94,8 +94,17 @@ def _calibrate_detection_model_from_snr_and_found(
     snr_binned_nbins: int,
     mchirp_det: np.ndarray | None = None,
     mchirp_binned_nbins: int = 20,
+    weights: np.ndarray | None = None,
 ) -> CalibratedDetectionModel:
-    """Calibrate a p_det(snr) proxy curve from injections (unweighted)."""
+    """Calibrate a p_det proxy curve from injections.
+
+    Notes
+    -----
+    If `weights` is provided, calibration uses weighted binning / weighted found fractions.
+    This can reduce selection-normalization bias when `alpha(H0)` is itself computed as a
+    weighted expectation over the injection set (e.g. `weight_mode='inv_sampling_pdf'` and/or
+    population weights).
+    """
     snr = np.asarray(snr_net_opt, dtype=float)
     found = np.asarray(found_ifar, dtype=bool)
     if snr.shape != found.shape:
@@ -103,15 +112,50 @@ def _calibrate_detection_model_from_snr_and_found(
     if snr.size < 100:
         raise ValueError("Too few injections for detection-model calibration.")
 
+    w: np.ndarray | None = None
+    if weights is not None:
+        w = np.asarray(weights, dtype=float)
+        if w.shape != snr.shape:
+            raise ValueError("weights must have the same shape as snr_net_opt for detection-model calibration.")
+        if not np.all(np.isfinite(w)) or np.any(w <= 0.0):
+            raise ValueError("weights must be finite and strictly positive for detection-model calibration.")
+
+    def _weighted_quantile(x: np.ndarray, q: np.ndarray, wq: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        q = np.asarray(q, dtype=float)
+        wq = np.asarray(wq, dtype=float)
+        if x.ndim != 1 or q.ndim != 1 or wq.ndim != 1 or x.shape != wq.shape:
+            raise ValueError("weighted_quantile requires 1D x and matching 1D weights.")
+        if np.any(~np.isfinite(q)) or np.any(q < 0.0) or np.any(q > 1.0):
+            raise ValueError("weighted_quantile requires q in [0,1].")
+        m = np.isfinite(x) & np.isfinite(wq) & (wq > 0.0)
+        if not np.any(m):
+            raise ValueError("weighted_quantile got no valid (finite, positive-weight) samples.")
+        x = x[m]
+        wq = wq[m]
+        order = np.argsort(x)
+        x = x[order]
+        wq = wq[order]
+        cdf = np.cumsum(wq)
+        cdf = cdf / float(cdf[-1])
+        # np.interp expects increasing x-coordinates; cdf is monotone by construction.
+        return np.interp(q, cdf, x, left=float(x[0]), right=float(x[-1]))
+
     if det_model == "threshold":
-        thresh = float(snr_threshold) if snr_threshold is not None else float(calibrate_snr_threshold_match_count(snr_net_opt=snr, found_ifar=found))
+        if snr_threshold is not None:
+            thresh = float(snr_threshold)
+        elif w is None:
+            thresh = float(calibrate_snr_threshold_match_count(snr_net_opt=snr, found_ifar=found))
+        else:
+            thresh = float(calibrate_snr_threshold_match_found_fraction(snr_net_opt=snr, found_ifar=found, weights=w))
         return CalibratedDetectionModel(det_model="threshold", snr_threshold=float(thresh))
 
     if det_model == "snr_binned":
         nb = int(snr_binned_nbins)
         if nb < 20:
             raise ValueError("snr_binned_nbins too small (need >= 20).")
-        edges = np.quantile(snr, np.linspace(0.0, 1.0, nb + 1))
+        qs = np.linspace(0.0, 1.0, nb + 1)
+        edges = _weighted_quantile(snr, qs, w) if w is not None else np.quantile(snr, qs)
         edges = np.unique(edges)
         if edges.size < 10:
             raise ValueError("Too few unique SNR edges for snr_binned.")
@@ -122,7 +166,12 @@ def _calibrate_detection_model_from_snr_and_found(
             if not np.any(m_i):
                 p[i] = p[i - 1] if i > 0 else 0.0
                 continue
-            p[i] = float(np.mean(found[m_i].astype(float)))
+            if w is None:
+                p[i] = float(np.mean(found[m_i].astype(float)))
+            else:
+                wi = w[m_i]
+                wsum = float(np.sum(wi))
+                p[i] = float(np.sum(wi * found[m_i].astype(float)) / wsum) if wsum > 0.0 else (p[i - 1] if i > 0 else 0.0)
         p = np.maximum.accumulate(np.clip(p, 0.0, 1.0))
         return CalibratedDetectionModel(det_model="snr_binned", snr_binned_edges=np.asarray(edges, dtype=float), snr_binned_pdet=np.asarray(p, dtype=float))
 
@@ -138,7 +187,8 @@ def _calibrate_detection_model_from_snr_and_found(
         nb_snr = int(snr_binned_nbins)
         if nb_snr < 20:
             raise ValueError("snr_binned_nbins too small (need >= 20).")
-        snr_edges = np.quantile(snr, np.linspace(0.0, 1.0, nb_snr + 1))
+        qs = np.linspace(0.0, 1.0, nb_snr + 1)
+        snr_edges = _weighted_quantile(snr, qs, w) if w is not None else np.quantile(snr, qs)
         snr_edges = np.unique(snr_edges)
         if snr_edges.size < 10:
             raise ValueError("Too few unique SNR edges for snr_mchirp_binned.")
@@ -147,7 +197,8 @@ def _calibrate_detection_model_from_snr_and_found(
         nb_mc = int(mchirp_binned_nbins)
         if nb_mc < 4:
             raise ValueError("mchirp_binned_nbins too small (need >= 4).")
-        mc_edges = np.quantile(mc, np.linspace(0.0, 1.0, nb_mc + 1))
+        qs = np.linspace(0.0, 1.0, nb_mc + 1)
+        mc_edges = _weighted_quantile(mc, qs, w) if w is not None else np.quantile(mc, qs)
         mc_edges = np.unique(mc_edges)
         if mc_edges.size < 4:
             raise ValueError("Too few unique mchirp_det edges for snr_mchirp_binned.")
@@ -165,7 +216,12 @@ def _calibrate_detection_model_from_snr_and_found(
                 if not np.any(m_ij):
                     pdet[i_mc, i_snr] = pdet[i_mc, i_snr - 1] if i_snr > 0 else 0.0
                     continue
-                pdet[i_mc, i_snr] = float(np.mean(found[m_ij].astype(float)))
+                if w is None:
+                    pdet[i_mc, i_snr] = float(np.mean(found[m_ij].astype(float)))
+                else:
+                    wij = w[m_ij]
+                    wsum = float(np.sum(wij))
+                    pdet[i_mc, i_snr] = float(np.sum(wij * found[m_ij].astype(float)) / wsum) if wsum > 0.0 else (pdet[i_mc, i_snr - 1] if i_snr > 0 else 0.0)
             pdet[i_mc, :] = np.maximum.accumulate(np.clip(pdet[i_mc, :], 0.0, 1.0))
 
         return CalibratedDetectionModel(
@@ -1148,6 +1204,7 @@ def _alpha_h0_grid_from_injections(
         snr_binned_nbins=int(snr_binned_nbins),
         mchirp_det=chirp_mass_det,
         mchirp_binned_nbins=int(mchirp_binned_nbins),
+        weights=w,
     )
     thresh = det.snr_threshold
 
@@ -1771,10 +1828,12 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
     pop_m_peak: float = 35.0,
     pop_m_peak_sigma: float = 5.0,
     pop_m_peak_frac: float = 0.1,
+    inj_mass_pdf_coords: Literal["m1m2", "m1q"] = "m1m2",
     importance_smoothing: Literal["none", "truncate", "psis"] = "none",
     importance_truncate_tau: float | None = None,
     event_qc_mode: Literal["fail", "skip"] = "skip",
     event_min_finite_frac: float = 0.0,
+    selection_include_h0_volume_scaling: bool = False,
     prior: Literal["uniform"] = "uniform",
 ) -> dict[str, Any]:
     """Compute a GR H0 posterior on a grid using hierarchical PE-sample reweighting + selection alpha(H0)."""
@@ -1826,6 +1885,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
             snr_binned_nbins=int(snr_binned_nbins),
             mchirp_det=_mc_det,
             mchirp_binned_nbins=int(mchirp_binned_nbins),
+            weights=_w,
         )
 
     cache_dir_path: Path | None = None
@@ -2024,10 +2084,14 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
             pop_m_peak=float(pop_m_peak),
             pop_m_peak_sigma=float(pop_m_peak_sigma),
             pop_m_peak_frac=float(pop_m_peak_frac),
+            inj_mass_pdf_coords=inj_mass_pdf_coords,
         )
         alpha_grid = np.asarray(alpha, dtype=float)
         alpha_meta = meta
         log_alpha_grid = np.log(np.clip(alpha_grid, 1e-300, np.inf))
+        if bool(selection_include_h0_volume_scaling):
+            # Optional xi-style normalization: include the (c/H0)^3 scaling (dropping constant c^3).
+            log_alpha_grid = log_alpha_grid - 3.0 * np.log(np.clip(H0_grid, 1e-12, np.inf))
         logL_total = logL_total - float(len(per_event)) * log_alpha_grid
     else:
         log_alpha_grid = None
@@ -2082,6 +2146,8 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
         "selection_ifar_threshold_yr": float(ifar_threshold_yr),
         "include_pdet_in_event_term": bool(include_pdet_in_event_term),
         "pop_z_include_h0_volume_scaling": bool(pop_z_include_h0_volume_scaling),
+        "inj_mass_pdf_coords": str(inj_mass_pdf_coords),
+        "selection_include_h0_volume_scaling": bool(selection_include_h0_volume_scaling),
         "importance_smoothing": str(importance_smoothing),
         "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
         "pdet_model": {

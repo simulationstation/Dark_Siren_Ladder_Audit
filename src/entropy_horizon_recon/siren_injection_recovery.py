@@ -507,6 +507,7 @@ def generate_synthetic_detected_events_from_injections(
         snr_binned_nbins=int(cfg.snr_binned_nbins),
         mchirp_det=mc_det,
         mchirp_binned_nbins=int(cfg.mchirp_binned_nbins),
+        weights=w,
     )
     pdet = det.pdet(snr_true, mchirp_det=mc_det)
 
@@ -813,6 +814,7 @@ def run_injection_recovery_gr_h0(
             snr_binned_nbins=int(cfg.snr_binned_nbins),
             mchirp_det=_mc_det,
             mchirp_binned_nbins=int(cfg.mchirp_binned_nbins),
+            weights=_w,
         )
 
     res_off = compute_gr_h0_posterior_grid_hierarchical_pe(

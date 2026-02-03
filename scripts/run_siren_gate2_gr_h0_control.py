@@ -156,6 +156,11 @@ def main() -> int:
     ap.add_argument("--pop-z-mode", choices=["none", "comoving_uniform", "comoving_powerlaw"], default="none", help="Population z weight mode (default none).")
     ap.add_argument("--pop-z-k", type=float, default=0.0, help="Powerlaw k for --pop-z-mode=comoving_powerlaw.")
     ap.add_argument(
+        "--pop-z-include-h0-volume-scaling",
+        action="store_true",
+        help="Include an explicit (c/H0)^3 factor in the pop_z weight (audit/debug knob).",
+    )
+    ap.add_argument(
         "--pop-mass-mode",
         choices=["none", "powerlaw_q", "powerlaw_q_smooth", "powerlaw_peak_q_smooth"],
         default="none",
@@ -174,6 +179,17 @@ def main() -> int:
     ap.add_argument("--pop-m-peak", type=float, default=35.0, help="Gaussian peak location in m1 (Msun) for --pop-mass-mode=powerlaw_peak_q_smooth.")
     ap.add_argument("--pop-m-peak-sigma", type=float, default=5.0, help="Gaussian peak sigma in m1 (Msun) for --pop-mass-mode=powerlaw_peak_q_smooth.")
     ap.add_argument("--pop-m-peak-frac", type=float, default=0.1, help="Gaussian peak mixture fraction for --pop-mass-mode=powerlaw_peak_q_smooth.")
+    ap.add_argument(
+        "--inj-mass-pdf-coords",
+        choices=["m1m2", "m1q"],
+        default="m1m2",
+        help="Mass-coordinate convention for injection sampling_pdf (default m1m2).",
+    )
+    ap.add_argument(
+        "--selection-include-h0-volume-scaling",
+        action="store_true",
+        help="Use an xi-style normalization by including an H0^{-3} factor in the selection term (audit/debug knob).",
+    )
     ap.add_argument(
         "--event-qc-mode",
         choices=["fail", "skip"],
@@ -327,6 +343,9 @@ def main() -> int:
         pop_m_peak=float(args.pop_m_peak),
         pop_m_peak_sigma=float(args.pop_m_peak_sigma),
         pop_m_peak_frac=float(args.pop_m_peak_frac),
+        pop_z_include_h0_volume_scaling=bool(args.pop_z_include_h0_volume_scaling),
+        inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+        selection_include_h0_volume_scaling=bool(args.selection_include_h0_volume_scaling),
         event_qc_mode=str(args.event_qc_mode),  # type: ignore[arg-type]
         event_min_finite_frac=float(args.event_min_finite_frac),
         prior="uniform",
@@ -372,6 +391,9 @@ def main() -> int:
             pop_m_peak=float(args.pop_m_peak),
             pop_m_peak_sigma=float(args.pop_m_peak_sigma),
             pop_m_peak_frac=float(args.pop_m_peak_frac),
+            pop_z_include_h0_volume_scaling=bool(args.pop_z_include_h0_volume_scaling),
+            inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+            selection_include_h0_volume_scaling=bool(args.selection_include_h0_volume_scaling),
             event_qc_mode=str(args.event_qc_mode),  # type: ignore[arg-type]
             event_min_finite_frac=float(args.event_min_finite_frac),
             prior="uniform",
@@ -420,9 +442,12 @@ def main() -> int:
         "snr_threshold": float(args.snr_thresh) if args.snr_thresh is not None else None,
         "snr_binned_nbins": int(args.snr_binned_nbins),
         "weight_modes": list(weight_modes),
+        "inj_mass_pdf_coords": str(args.inj_mass_pdf_coords),
+        "selection_include_h0_volume_scaling": bool(args.selection_include_h0_volume_scaling),
         "pop": {
             "pop_z_mode": str(args.pop_z_mode),
             "pop_z_k": float(args.pop_z_k),
+            "pop_z_include_h0_volume_scaling": bool(args.pop_z_include_h0_volume_scaling),
             "pop_mass_mode": str(args.pop_mass_mode),
             "pop_m1_alpha": float(args.pop_m1_alpha),
             "pop_m_min": float(args.pop_m_min),
