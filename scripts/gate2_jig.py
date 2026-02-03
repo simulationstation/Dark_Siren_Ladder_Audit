@@ -404,6 +404,7 @@ def main() -> int:
     ap_filter = sub.add_parser("filter", help="Recompute posterior after filtering/dropping events; writes a CSV of summaries.")
     ap_filter.add_argument("--json", type=Path, required=True, help="Path to a gr_h0_selection_*.json file (must include per-event logL_H0 arrays).")
     ap_filter.add_argument("--out", type=Path, default=Path("FINDINGS") / "gate2_filter.csv", help="CSV to write (default FINDINGS/gate2_filter.csv).")
+    ap_filter.add_argument("--relative-to", type=Path, default=Path("."), help="Base path for relative json_path in CSV (default repo root).")
     ap_filter.add_argument("--min-ess-list", default="0,1,10,100,1000", help="Comma list of ESS thresholds to scan (default 0,1,10,100,1000).")
     ap_filter.add_argument("--min-finite-frac-list", default="0.0,0.5,0.9", help="Comma list of finite_frac thresholds to scan (default 0.0,0.5,0.9).")
     ap_filter.add_argument("--drop-worst-ess-list", default="0,1,2,3,5", help="Comma list of N to drop by lowest ess_min (default 0,1,2,3,5).")
@@ -431,12 +432,20 @@ def main() -> int:
         if d.get("log_alpha_grid") is not None:
             log_alpha_grid = _as_float_array(d.get("log_alpha_grid"), name="log_alpha_grid")
 
+        rel = Path(args.relative_to).expanduser().resolve()
+
         logH = np.log(np.clip(H0_grid, 1e-300, np.inf))
         for r in recs:
             ll = np.asarray(r["logL_H0"], dtype=float)
             r["b"] = _slope(ll, logH)
 
         rows: list[dict[str, Any]] = []
+
+        def _relpath(p: Path) -> str:
+            try:
+                return str(p.resolve().relative_to(rel))
+            except Exception:
+                return str(p)
 
         def _add_row(tag: str, *, kept: list[dict[str, Any]], detail: str, dropped: list[str]) -> None:
             res = _recompute_posterior_from_events(H0_grid=H0_grid, events=kept, log_alpha_grid=log_alpha_grid)
@@ -446,7 +455,7 @@ def main() -> int:
             s = res.get("summary", {}) or {}
             rows.append(
                 {
-                    "json_path": str(path),
+                    "json_path": _relpath(path),
                     "tag": tag,
                     "detail": detail,
                     "n_events": int(res["n_events"]),

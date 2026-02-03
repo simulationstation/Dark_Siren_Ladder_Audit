@@ -96,3 +96,100 @@ This project uses (and optionally benchmarks against) open-source gravitational-
 - `wcosmo` (wcosmo contributors)
 - `icarogw` (ICAROGW contributors; installed in an isolated venv here)
 - `ligo.skymap`, `bilby`, `healpy`, `astropy`, `h5py` (and other scientific Python dependencies)
+
+## Recent work + findings (2026-02-03)
+
+This section is a “paper trail” of what we ran and what it implies for the audit.
+
+### 1) Sanity checks (oracles)
+
+We cross-checked our `alpha(H0)` implementation (distance cache + injection rescaling proxy) against community tooling:
+
+- Output dir: `outputs/workcycle_oracle_popmarg_20260203_202133UTC/oracle_alpha`
+- Summary JSON: `outputs/workcycle_oracle_popmarg_20260203_202133UTC/oracle_alpha/json/alpha_compare_summary.json`
+- Result: `alpha(H0)` matches:
+  - ours vs `wcosmo`: `max_abs_diff ≈ 7.6e-10`
+  - ours vs `icarogw`: `max_abs_diff ≈ 6.6e-05`
+
+Takeaway: the `alpha(H0)` backend is not the source of the Gate‑2 “edge runaway”.
+
+### 2) Gate‑2 population anchoring (LVK hyperposterior marginalization)
+
+Gate‑2 is sensitive to population assumptions. We ran the “best available baseline” option: marginalize Gate‑2 over 200 LVK population hyperposterior draws (PowerLaw+Peak + powerlaw redshift).
+
+- Output dir: `outputs/workcycle_oracle_popmarg_20260203_202133UTC/gate2_popmarg_lvk`
+- Summary JSON: `outputs/workcycle_oracle_popmarg_20260203_202133UTC/gate2_popmarg_lvk/json/pop_marginal_summary.json`
+- Mixture posterior (200 draws):
+  - MAP `H0 ≈ 148` (not at grid edge)
+  - median `p50 ≈ 150.24` with `[p16,p84] ≈ [134.81,169.40]`
+  - `0/200` edge hits
+
+Takeaway: under LVK-ish population assumptions the GR selection-on posterior is still *high*, but it is not edge-pegged on a wide grid (40–200).
+
+### 3) Gate‑2 real-data ablation grid (what’s actually driving the H0 runaway)
+
+We ran a 6‑case ablation over the two biggest modeling knobs:
+- redshift prior (`pop_z_mode`)
+- mass prior (`pop_mass_mode`)
+plus two “H0 volume scaling bookkeeping” toggles that move an `H0^{-3}` factor between numerator and selection.
+
+- Output dir: `outputs/gate2_realdata_ablationgrid_20260203_212254UTC`
+- Summary CSV: `outputs/gate2_realdata_ablationgrid_20260203_212254UTC/ablation_summary.csv`
+
+| case | pop_z_mode | pop_mass_mode | pop_z_include_h0_volume_scaling | selection_include_h0_volume_scaling | H0_map | p50 | edge |
+|---|---|---|---:|---:|---:|---:|---|
+| znone_massnone | none | none | False | False | 41.0 | 50.39 | False |
+| znone_masspeak | none | powerlaw_peak_q_smooth | False | False | 40.5 | 44.13 | False |
+| zcomoving_massnone | comoving_uniform | none | False | False | 127.5 | 125.05 | False |
+| zcomoving_masspeak | comoving_uniform | powerlaw_peak_q_smooth | False | False | 175.0 | 174.98 | False |
+| zcomoving_masspeak_popzvol | comoving_uniform | powerlaw_peak_q_smooth | True | False | 40.0 | 40.00 | True |
+| zcomoving_masspeak_popzvol_selvol | comoving_uniform | powerlaw_peak_q_smooth | True | True | 175.0 | 174.98 | False |
+
+Takeaway: the redshift+mass population model and H0-scaling conventions *dominate* the Gate‑2 posterior shape; toggling where the “volume scaling” lives can flip the posterior from high-H0 to low-edge.
+
+### 4) Gate‑2 “single-event dominance” jig (fast heuristic diagnosis)
+
+To quickly see if one or a few events dominate the monotonic H0 push, we added a `filter` subcommand to `scripts/gate2_jig.py` that recomputes the posterior after:
+- dropping the worst-ESS events,
+- dropping the highest “b exponent” events (events with the strongest positive H0 slope),
+- thresholding by `ess_min` / `finite_frac`.
+
+Example (recomputes from an existing Gate‑2 JSON):
+
+```bash
+./.venv/bin/python scripts/gate2_jig.py filter \
+  --json outputs/gate2_realdata_fixedzmax_20260203_190502UTC/fixed_wide/json/gr_h0_selection_on_inv_sampling_pdf.json \
+  --out FINDINGS/gate2_filter_fixed_wide.csv
+```
+
+Result file (tracked): `FINDINGS/gate2_filter_fixed_wide.csv`
+
+In that specific fixed-wide run, dropping a single worst-ESS event (`GW191127_050227`) moves the posterior substantially (H0_map ~175 → ~150.5).
+
+Takeaway: event-level diagnostics matter; apparent “global” behavior can be driven by a small subset of events.
+
+### 5) Gate‑2 ladder (toy cancellation + injection-recovery rungs)
+
+We ran the built-in ladder to avoid endless knob-turning and to isolate which rung breaks.
+
+- Output dir: `outputs/siren_gate2_ladder_20260203_221227UTC`
+- Results CSV: `outputs/siren_gate2_ladder_20260203_221227UTC/ladder.csv`
+
+Key result: under a mass-peak population model, a 1D SNR-only selection model biases H0 high, while the 2D model (`snr_mchirp_binned`) largely removes that bias in injection-recovery.
+
+| rung | det_model | pop_z_mode | pop_mass_mode | H0_map | p50 | bias_p50 (vs 70) |
+|---|---|---|---|---:|---:|---:|
+| ladder_2_z_comoving_mass_peak | snr_binned | comoving_uniform | powerlaw_peak_q_smooth | 84.0 | 82.47 | +12.47 |
+| ladder_5_det_snr_mchirp_binned | snr_mchirp_binned | comoving_uniform | powerlaw_peak_q_smooth | 72.0 | 70.74 | +0.74 |
+
+Takeaway: selection realism (mass dependence) is a high-leverage fix for Gate‑2 robustness.
+
+### 6) Code fix that fell out of this work
+
+We fixed a real bug in the hierarchical PE implementation:
+
+- Bug: a mass-coordinate Jacobian factor was being applied even when `pop_mass_mode="none"`, making logL spuriously depend on the PE mass samples (q) in “massless” runs.
+- Fix: gate the Jacobian under `if pop_mass_mode != "none"`.
+- Regression test: `tests/test_dark_sirens_hierarchical_pe_mass_coord_jacobian.py`
+
+This fix is in the `main` branch history (commit `4dba965`).
