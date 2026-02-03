@@ -154,6 +154,7 @@ def main() -> int:
 
     ap.add_argument("--pop-grid-json", default=None, help="JSON list of population configs (name,pop_z_mode,pop_z_k,pop_mass_mode).")
     ap.add_argument("--pop-grid-mode", choices=["default"], default="default", help="Built-in pop grid selector (default: default).")
+    ap.add_argument("--n-proc", type=int, default=0, help="Processes for per-event hierarchical PE term computation (0=auto; default 0).")
     ap.add_argument("--out", default=None, help="Output directory (default outputs/siren_gate2_popmarg_<UTCSTAMP>).")
     args = ap.parse_args()
 
@@ -220,6 +221,7 @@ def main() -> int:
             omega_k0=float(args.omega_k0),
             z_max=float(z_max),
             cache_dir=cache_dir / cfg.name,
+            n_processes=int(args.n_proc),
             include_pdet_in_event_term=False,
             pop_z_include_h0_volume_scaling=False,
             injections=injections,
