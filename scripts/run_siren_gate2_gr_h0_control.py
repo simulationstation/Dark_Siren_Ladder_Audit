@@ -138,9 +138,15 @@ def main() -> int:
 
     ap.add_argument("--selection-injections-hdf", required=True, help="Path to O3 sensitivity injection file (HDF5).")
     ap.add_argument("--selection-ifar-thresh-yr", type=float, default=1.0, help="IFAR threshold (years) for injections (default 1).")
-    ap.add_argument("--det-model", choices=["threshold", "snr_binned"], default="snr_binned", help="Detection model for alpha(H0) (default snr_binned).")
+    ap.add_argument(
+        "--det-model",
+        choices=["threshold", "snr_binned", "snr_mchirp_binned"],
+        default="snr_binned",
+        help="Detection model for alpha(H0) (default snr_binned).",
+    )
     ap.add_argument("--snr-thresh", type=float, default=None, help="Optional fixed SNR threshold (default: calibrate).")
     ap.add_argument("--snr-binned-nbins", type=int, default=200, help="Bins for snr_binned model (default 200).")
+    ap.add_argument("--mchirp-binned-nbins", type=int, default=20, help="Chirp-mass bins for det_model=snr_mchirp_binned (default 20).")
     ap.add_argument(
         "--weight-modes",
         default="none,inv_sampling_pdf",
@@ -308,6 +314,7 @@ def main() -> int:
         det_model=str(args.det_model),  # type: ignore[arg-type]
         snr_threshold=float(args.snr_thresh) if args.snr_thresh is not None else None,
         snr_binned_nbins=int(args.snr_binned_nbins),
+        mchirp_binned_nbins=int(args.mchirp_binned_nbins),
         weight_mode="none",
         pop_z_mode=str(args.pop_z_mode),  # type: ignore[arg-type]
         pop_z_powerlaw_k=float(args.pop_z_k),
@@ -352,6 +359,7 @@ def main() -> int:
             det_model=str(args.det_model),  # type: ignore[arg-type]
             snr_threshold=float(args.snr_thresh) if args.snr_thresh is not None else None,
             snr_binned_nbins=int(args.snr_binned_nbins),
+            mchirp_binned_nbins=int(args.mchirp_binned_nbins),
             weight_mode=str(wm),  # type: ignore[arg-type]
             pop_z_mode=str(args.pop_z_mode),  # type: ignore[arg-type]
             pop_z_powerlaw_k=float(args.pop_z_k),

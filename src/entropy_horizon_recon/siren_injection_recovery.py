@@ -18,7 +18,6 @@ from .dark_siren_h0 import (  # noqa: SLF001
 from .dark_sirens_hierarchical_pe import GWTCPeHierarchicalSamples
 from .dark_sirens_selection import (
     O3InjectionSet,
-    calibrate_snr_threshold_match_count,
     load_o3_injections,
 )
 from .gwtc_pe_priors import parse_gwtc_analytic_prior
@@ -56,8 +55,9 @@ class InjectionRecoveryConfig:
     z_max: float = 0.62
 
     # Detectability proxy for generating detections (must match inference alpha proxy choice).
-    det_model: Literal["threshold", "snr_binned"] = "threshold"
+    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned"] = "threshold"
     snr_binned_nbins: int = 200
+    mchirp_binned_nbins: int = 20
     selection_ifar_thresh_yr: float = 1.0
 
     # Population model used both for sampling events and for inference weighting.
@@ -200,6 +200,7 @@ def compute_selection_alpha_h0_grid_for_cfg(
         det_model=str(cfg.det_model),  # type: ignore[arg-type]
         snr_threshold=None,
         snr_binned_nbins=int(cfg.snr_binned_nbins),
+        mchirp_binned_nbins=int(cfg.mchirp_binned_nbins),
         weight_mode=str(cfg.weight_mode),  # type: ignore[arg-type]
         pop_z_mode=str(cfg.pop_z_mode),  # type: ignore[arg-type]
         pop_z_powerlaw_k=float(cfg.pop_z_k),
@@ -496,13 +497,18 @@ def generate_synthetic_detected_events_from_injections(
     dL_true = np.clip(dL_true, 1e-6, np.inf)
     snr_true = snr_fid * (dL_fid / dL_true)
 
-    thresh = float(calibrate_snr_threshold_match_count(snr_net_opt=snr_fid, found_ifar=found))
-    if cfg.det_model == "threshold":
-        pdet = (snr_true > thresh).astype(float)
-    else:
-        pdet_edges, pdet_vals = _build_snr_binned_pdet(snr=snr_fid, found_ifar=found, nbins=int(cfg.snr_binned_nbins))
-        idx_p = np.clip(np.digitize(snr_true, pdet_edges) - 1, 0, pdet_vals.size - 1)
-        pdet = np.asarray(pdet_vals[idx_p], dtype=float)
+    mc_src = ((m1 * m2) ** (3.0 / 5.0)) / np.clip(m1 + m2, 1e-300, np.inf) ** (1.0 / 5.0)
+    mc_det = mc_src * (1.0 + z)
+    det = _calibrate_detection_model_from_snr_and_found(
+        snr_net_opt=snr_fid,
+        found_ifar=found,
+        det_model=str(cfg.det_model),  # type: ignore[arg-type]
+        snr_threshold=None,
+        snr_binned_nbins=int(cfg.snr_binned_nbins),
+        mchirp_det=mc_det,
+        mchirp_binned_nbins=int(cfg.mchirp_binned_nbins),
+    )
+    pdet = det.pdet(snr_true, mchirp_det=mc_det)
 
     w_det = np.clip(w * np.clip(pdet, 0.0, 1.0), 0.0, np.inf)
     good_det = np.isfinite(w_det) & (w_det > 0.0)
@@ -783,7 +789,7 @@ def run_injection_recovery_gr_h0(
     # but only if the event term explicitly includes p_det.
     det_model_obj = None
     if bool(cfg.include_pdet_in_event_term):
-        _z, _dL_fid, _snr, _found, _w = _injection_weights(
+        _z, _dL_fid, _snr, _found, _mc_det, _w = _injection_weights(
             injections,  # type: ignore[arg-type]
             weight_mode=str(cfg.weight_mode),  # type: ignore[arg-type]
             pop_z_mode=str(cfg.pop_z_mode),  # type: ignore[arg-type]
@@ -806,6 +812,8 @@ def run_injection_recovery_gr_h0(
             det_model=str(cfg.det_model),  # type: ignore[arg-type]
             snr_threshold=None,
             snr_binned_nbins=int(cfg.snr_binned_nbins),
+            mchirp_det=_mc_det,
+            mchirp_binned_nbins=int(cfg.mchirp_binned_nbins),
         )
 
     res_off = compute_gr_h0_posterior_grid_hierarchical_pe(
@@ -825,6 +833,7 @@ def run_injection_recovery_gr_h0(
         det_model=str(cfg.det_model),  # type: ignore[arg-type]
         snr_threshold=None,
         snr_binned_nbins=int(cfg.snr_binned_nbins),
+        mchirp_binned_nbins=int(cfg.mchirp_binned_nbins),
         weight_mode=str(cfg.weight_mode),  # type: ignore[arg-type]
         pop_z_mode=str(cfg.pop_z_mode),  # type: ignore[arg-type]
         pop_z_powerlaw_k=float(cfg.pop_z_k),

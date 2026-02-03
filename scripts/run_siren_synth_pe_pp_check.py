@@ -91,8 +91,9 @@ def main() -> int:
     ap.add_argument("--z-max", type=float, default=0.62, help="Max z for truth sampling (default 0.62).")
     ap.add_argument("--omega-m0", type=float, default=0.31)
     ap.add_argument("--omega-k0", type=float, default=0.0)
-    ap.add_argument("--det-model", choices=["threshold", "snr_binned"], default="snr_binned")
+    ap.add_argument("--det-model", choices=["threshold", "snr_binned", "snr_mchirp_binned"], default="snr_binned")
     ap.add_argument("--snr-binned-nbins", type=int, default=200)
+    ap.add_argument("--mchirp-binned-nbins", type=int, default=20)
     ap.add_argument("--weight-mode", choices=["none", "inv_sampling_pdf"], default="inv_sampling_pdf")
     ap.add_argument("--pop-z-mode", choices=["none", "comoving_uniform", "comoving_powerlaw"], default="comoving_uniform")
     ap.add_argument("--pop-z-k", type=float, default=0.0)
@@ -151,6 +152,7 @@ def main() -> int:
         z_max=float(args.z_max),
         det_model=str(args.det_model),  # type: ignore[arg-type]
         snr_binned_nbins=int(args.snr_binned_nbins),
+        mchirp_binned_nbins=int(args.mchirp_binned_nbins),
         selection_ifar_thresh_yr=float(args.selection_ifar_thresh_yr),
         pop_z_mode=str(args.pop_z_mode),  # type: ignore[arg-type]
         pop_z_k=float(args.pop_z_k),
