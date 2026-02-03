@@ -34,6 +34,17 @@ Then you can compare `alpha(H0)` computed with our distance cache vs wcosmo vs I
   --plot
 ```
 
+## Gate‑2 population anchoring (recommended)
+
+The GR \(H_0\) selection-on control is sensitive to population assumptions. For a “best available” baseline, you can marginalize over **LVK GWTC‑3 population hyperposterior draws** (PowerLaw+Peak + powerlaw redshift), using the O3a population data release bilby-result JSON:
+
+```bash
+./.venv/bin/python scripts/run_siren_gate2_gr_h0_popmarginal.py \
+  --pop-mode lvk_hyper \
+  --lvk-pop-result-json data/cache/gw/zenodo/11254021/extracted/GWTC-3-population-data/o3a_population_data_release/Population_Samples/default/o1o2o3_mass_c_iid_mag_two_comp_iid_tilt_powerlaw_redshift_result.json \
+  --lvk-n-draws 200
+```
+
 ## Run log (GR vs mu)
 
 Many siren tests in this repo score **mu (entropy-modified)** vs **GR** using a total ΔLPD metric. To keep comparisons auditable across many detached runs, build a single CSV from finished output folders:

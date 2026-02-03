@@ -1966,6 +1966,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
     importance_truncate_tau: float | None = None,
     event_qc_mode: Literal["fail", "skip"] = "skip",
     event_min_finite_frac: float = 0.0,
+    event_min_ess: float = 0.0,
     selection_include_h0_volume_scaling: bool = False,
     prior: Literal["uniform"] = "uniform",
 ) -> dict[str, Any]:
@@ -2031,6 +2032,9 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
     event_min_finite_frac = float(event_min_finite_frac)
     if not (np.isfinite(event_min_finite_frac) and 0.0 <= event_min_finite_frac <= 1.0):
         raise ValueError("event_min_finite_frac must be finite and in [0,1].")
+    event_min_ess = float(event_min_ess)
+    if not (np.isfinite(event_min_ess) and event_min_ess >= 0.0):
+        raise ValueError("event_min_ess must be finite and >= 0.")
 
     pdet_model_meta = None
     if bool(include_pdet_in_event_term):
@@ -2140,6 +2144,23 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
                     "This usually indicates a population mismatch (hard support cutoffs) or an H0 grid/z_max that exceeds the event's mapped support."
                 )
 
+            ess_min = float(np.nanmin(ess_ev_arr)) if ess_ev_arr is not None and ess_ev_arr.size else float("nan")
+            if np.isfinite(ess_min) and ess_min < event_min_ess:
+                rec = {
+                    "event": str(ev),
+                    "reason": "ess_below_threshold",
+                    "ess_min": ess_min,
+                    "event_min_ess": float(event_min_ess),
+                    "pe_file": str(r.get("pe_file", "")),
+                    "pe_analysis": str(r.get("pe_analysis", "")),
+                    "pe_n_samples": int(r.get("pe_n_samples", -1)),
+                    "cache_hit": bool(cache_hit),
+                }
+                if event_qc_mode == "skip":
+                    skipped_events.append(rec)
+                    continue
+                raise ValueError(f"{ev}: ess_min={ess_min:.2f} below event_min_ess={event_min_ess:.2f}.")
+
             per_event.append(
                 {
                     "event": str(ev),
@@ -2152,7 +2173,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
                     "importance_smoothing": str(importance_smoothing),
                     "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
                     "logL_H0": [float(x) for x in logL_ev.tolist()],
-                    "ess_min": float(np.nanmin(ess_ev_arr)) if ess_ev_arr is not None and ess_ev_arr.size else float("nan"),
+                    "ess_min": ess_min,
                     "n_good_min": float(np.nanmin(n_good_ev_arr)) if n_good_ev_arr is not None and n_good_ev_arr.size else float("nan"),
                     "finite_frac": fin_frac,
                 }
@@ -2287,6 +2308,23 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
                     "This usually indicates a population mismatch (hard support cutoffs) or an H0 grid/z_max that exceeds the event's mapped support."
                 )
 
+            ess_min = float(np.nanmin(np.asarray(ess_ev, dtype=float))) if ess_ev is not None and ess_ev.size else float("nan")
+            if np.isfinite(ess_min) and ess_min < event_min_ess:
+                rec = {
+                    "event": str(ev),
+                    "reason": "ess_below_threshold",
+                    "ess_min": ess_min,
+                    "event_min_ess": float(event_min_ess),
+                    "pe_file": str(pe.file),
+                    "pe_analysis": str(pe.analysis),
+                    "pe_n_samples": int(pe.n_used),
+                    "cache_hit": bool(cache_hit),
+                }
+                if event_qc_mode == "skip":
+                    skipped_events.append(rec)
+                    continue
+                raise ValueError(f"{ev}: ess_min={ess_min:.2f} below event_min_ess={event_min_ess:.2f}.")
+
             per_event.append(
                 {
                     "event": str(ev),
@@ -2299,9 +2337,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
                     "importance_smoothing": str(importance_smoothing),
                     "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
                     "logL_H0": [float(x) for x in np.asarray(logL_ev, dtype=float).tolist()],
-                    "ess_min": float(np.nanmin(np.asarray(ess_ev, dtype=float)))
-                    if ess_ev is not None and ess_ev.size
-                    else float("nan"),
+                    "ess_min": ess_min,
                     "n_good_min": float(np.nanmin(np.asarray(n_good_ev, dtype=float)))
                     if n_good_ev is not None and n_good_ev.size
                     else float("nan"),
@@ -2425,4 +2461,5 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
         },
         "event_qc_mode": str(event_qc_mode),
         "event_min_finite_frac": float(event_min_finite_frac),
+        "event_min_ess": float(event_min_ess),
     }

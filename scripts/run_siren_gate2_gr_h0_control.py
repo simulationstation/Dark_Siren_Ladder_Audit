@@ -202,6 +202,12 @@ def main() -> int:
         default=0.0,
         help="Minimum fraction of H0 grid points with finite event logL to keep an event when event_qc_mode=skip (default 0; disables 'insufficient support' skipping).",
     )
+    ap.add_argument(
+        "--event-min-ess",
+        type=float,
+        default=0.0,
+        help="Minimum ess_min across the H0 grid to keep an event (default 0; disables ESS-based skipping).",
+    )
 
     ap.add_argument(
         "--importance-smoothing",
@@ -355,6 +361,7 @@ def main() -> int:
         selection_include_h0_volume_scaling=bool(args.selection_include_h0_volume_scaling),
         event_qc_mode=str(args.event_qc_mode),  # type: ignore[arg-type]
         event_min_finite_frac=float(args.event_min_finite_frac),
+        event_min_ess=float(args.event_min_ess),
         prior="uniform",
     )
     (json_dir / "gr_h0_selection_off.json").write_text(json.dumps(res_off, indent=2, sort_keys=True) + "\n")
@@ -404,6 +411,7 @@ def main() -> int:
             selection_include_h0_volume_scaling=bool(args.selection_include_h0_volume_scaling),
             event_qc_mode=str(args.event_qc_mode),  # type: ignore[arg-type]
             event_min_finite_frac=float(args.event_min_finite_frac),
+            event_min_ess=float(args.event_min_ess),
             prior="uniform",
         )
         res_on[str(wm)] = res

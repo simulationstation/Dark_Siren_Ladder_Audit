@@ -16,6 +16,8 @@ import numpy as np
 from entropy_horizon_recon.dark_siren_h0 import compute_gr_h0_posterior_grid_hierarchical_pe
 from entropy_horizon_recon.dark_sirens_hierarchical_pe import GWTCPeHierarchicalSamples
 from entropy_horizon_recon.dark_sirens_selection import load_o3_injections
+from entropy_horizon_recon.lvk_population import draw_to_gate2_population_kwargs
+from entropy_horizon_recon.lvk_population import sample_lvk_bbh_powerlaw_peak_redshift_draws
 
 
 def _utc_stamp() -> str:
@@ -151,9 +153,28 @@ def main() -> int:
 
     ap.add_argument("--event-qc-mode", choices=["fail", "skip"], default="skip")
     ap.add_argument("--event-min-finite-frac", type=float, default=0.0, help="Minimum finite-support fraction across H0 grid (default 0; disables 'insufficient support' skipping).")
+    ap.add_argument("--event-min-ess", type=float, default=0.0, help="Minimum ess_min across H0 grid (default 0; disables ESS-based skipping).")
 
+    ap.add_argument(
+        "--pop-mode",
+        choices=["grid", "lvk_hyper"],
+        default="grid",
+        help="Population marginalization mode: 'grid' uses a small hand grid; 'lvk_hyper' samples LVK hyperposterior draws (default: grid).",
+    )
     ap.add_argument("--pop-grid-json", default=None, help="JSON list of population configs (name,pop_z_mode,pop_z_k,pop_mass_mode).")
     ap.add_argument("--pop-grid-mode", choices=["default"], default="default", help="Built-in pop grid selector (default: default).")
+    ap.add_argument(
+        "--lvk-pop-result-json",
+        default=None,
+        help="LVK bilby result JSON containing hyperposterior draws (GWTC-3 population data release). Required for --pop-mode=lvk_hyper.",
+    )
+    ap.add_argument("--lvk-n-draws", type=int, default=200, help="Number of LVK hyperposterior draws to sample (default 200).")
+    ap.add_argument("--lvk-seed", type=int, default=0, help="RNG seed for LVK hyperposterior subsampling (default 0).")
+    ap.add_argument(
+        "--lvk-replace",
+        action="store_true",
+        help="Sample LVK hyperposterior draws with replacement (default: without replacement when possible).",
+    )
     ap.add_argument("--n-proc", type=int, default=0, help="Processes for per-event hierarchical PE term computation (0=auto; default 0).")
     ap.add_argument("--out", default=None, help="Output directory (default outputs/siren_gate2_popmarg_<UTCSTAMP>).")
     args = ap.parse_args()
@@ -202,55 +223,111 @@ def main() -> int:
     H0_grid = np.linspace(float(args.h0_min), float(args.h0_max), int(args.h0_n))
     injections = load_o3_injections(Path(args.selection_injections_hdf).expanduser().resolve(), ifar_threshold_yr=float(args.selection_ifar_thresh_yr))
 
-    if args.pop_grid_json is not None:
-        pop_grid = _parse_pop_grid_json(Path(args.pop_grid_json).expanduser().resolve())
+    pop_cfgs: list[dict[str, Any]] = []
+    if str(args.pop_mode) == "grid":
+        if args.pop_grid_json is not None:
+            pop_grid = _parse_pop_grid_json(Path(args.pop_grid_json).expanduser().resolve())
+        else:
+            pop_grid = _default_pop_grid()
+        if not pop_grid:
+            raise ValueError("Empty population grid.")
+        for cfg in pop_grid:
+            pop_cfgs.append(
+                {
+                    "name": cfg.name,
+                    "pop_z_mode": str(cfg.pop_z_mode),
+                    "pop_z_powerlaw_k": float(cfg.pop_z_k),
+                    "pop_mass_mode": str(cfg.pop_mass_mode),
+                    "pop_m1_alpha": float(args.pop_m1_alpha),
+                    "pop_m_min": float(args.pop_m_min),
+                    "pop_m_max": float(args.pop_m_max),
+                    "pop_q_beta": float(args.pop_q_beta),
+                    "pop_m_taper_delta": float(args.pop_m_taper_delta),
+                    "pop_m_peak": float(args.pop_m_peak),
+                    "pop_m_peak_sigma": float(args.pop_m_peak_sigma),
+                    "pop_m_peak_frac": float(args.pop_m_peak_frac),
+                }
+            )
+    elif str(args.pop_mode) == "lvk_hyper":
+        if args.lvk_pop_result_json is None:
+            raise ValueError("--pop-mode=lvk_hyper requires --lvk-pop-result-json.")
+        lvk_path = Path(args.lvk_pop_result_json).expanduser().resolve()
+        draws = sample_lvk_bbh_powerlaw_peak_redshift_draws(
+            lvk_path,
+            n_draws=int(args.lvk_n_draws),
+            seed=int(args.lvk_seed),
+            replace=bool(args.lvk_replace) if bool(args.lvk_replace) else None,
+        )
+        for i, draw in enumerate(draws):
+            pop_cfgs.append(
+                {
+                    "name": f"lvk_{i:04d}",
+                    "lvk_draw_index": int(i),
+                    "lvk_pop_result_json": str(lvk_path),
+                    **draw_to_gate2_population_kwargs(draw),
+                }
+            )
     else:
-        pop_grid = _default_pop_grid()
-    if not pop_grid:
-        raise ValueError("Empty population grid.")
+        raise ValueError(f"Unknown --pop-mode={args.pop_mode}")
+
+    if not pop_cfgs:
+        raise ValueError("No population configs selected.")
 
     # Run each config and collect normalized posteriors.
     per_cfg: list[dict[str, Any]] = []
     p_list: list[np.ndarray] = []
+    ok_cfgs: list[dict[str, Any]] = []
 
-    for cfg in pop_grid:
-        res = compute_gr_h0_posterior_grid_hierarchical_pe(
-            pe_by_event=pe_by_event,
-            H0_grid=H0_grid,
-            omega_m0=float(args.omega_m0),
-            omega_k0=float(args.omega_k0),
-            z_max=float(z_max),
-            cache_dir=cache_dir / cfg.name,
-            n_processes=int(args.n_proc),
-            include_pdet_in_event_term=False,
-            pop_z_include_h0_volume_scaling=False,
-            injections=injections,
-            ifar_threshold_yr=float(args.selection_ifar_thresh_yr),
-            det_model=str(args.det_model),  # type: ignore[arg-type]
-            snr_threshold=float(args.snr_thresh) if args.snr_thresh is not None else None,
-            snr_binned_nbins=int(args.snr_binned_nbins),
-            mchirp_binned_nbins=int(args.mchirp_binned_nbins),
-            weight_mode=str(args.weight_mode),  # type: ignore[arg-type]
-            pop_z_mode=str(cfg.pop_z_mode),  # type: ignore[arg-type]
-            pop_z_powerlaw_k=float(cfg.pop_z_k),
-            pop_mass_mode=str(cfg.pop_mass_mode),  # type: ignore[arg-type]
-            pop_m1_alpha=float(args.pop_m1_alpha),
-            pop_m_min=float(args.pop_m_min),
-            pop_m_max=float(args.pop_m_max),
-            pop_q_beta=float(args.pop_q_beta),
-            pop_m_taper_delta=float(args.pop_m_taper_delta),
-            pop_m_peak=float(args.pop_m_peak),
-            pop_m_peak_sigma=float(args.pop_m_peak_sigma),
-            pop_m_peak_frac=float(args.pop_m_peak_frac),
-            event_qc_mode=str(args.event_qc_mode),  # type: ignore[arg-type]
-            event_min_finite_frac=float(args.event_min_finite_frac),
-            prior="uniform",
-        )
-        _print_one(f"[pop {cfg.name}]", res)
-        (json_dir / f"gr_h0_selection_on_{cfg.name}.json").write_text(json.dumps(res, indent=2, sort_keys=True) + "\n")
+    for cfg in pop_cfgs:
+        name = str(cfg["name"])
+        try:
+            res = compute_gr_h0_posterior_grid_hierarchical_pe(
+                pe_by_event=pe_by_event,
+                H0_grid=H0_grid,
+                omega_m0=float(args.omega_m0),
+                omega_k0=float(args.omega_k0),
+                z_max=float(z_max),
+                cache_dir=cache_dir / name,
+                n_processes=int(args.n_proc),
+                include_pdet_in_event_term=False,
+                pop_z_include_h0_volume_scaling=False,
+                injections=injections,
+                ifar_threshold_yr=float(args.selection_ifar_thresh_yr),
+                det_model=str(args.det_model),  # type: ignore[arg-type]
+                snr_threshold=float(args.snr_thresh) if args.snr_thresh is not None else None,
+                snr_binned_nbins=int(args.snr_binned_nbins),
+                mchirp_binned_nbins=int(args.mchirp_binned_nbins),
+                weight_mode=str(args.weight_mode),  # type: ignore[arg-type]
+                pop_z_mode=str(cfg["pop_z_mode"]),  # type: ignore[arg-type]
+                pop_z_powerlaw_k=float(cfg["pop_z_powerlaw_k"]),
+                pop_mass_mode=str(cfg["pop_mass_mode"]),  # type: ignore[arg-type]
+                pop_m1_alpha=float(cfg["pop_m1_alpha"]),
+                pop_m_min=float(cfg["pop_m_min"]),
+                pop_m_max=float(cfg["pop_m_max"]),
+                pop_q_beta=float(cfg["pop_q_beta"]),
+                pop_m_taper_delta=float(cfg["pop_m_taper_delta"]),
+                pop_m_peak=float(cfg["pop_m_peak"]),
+                pop_m_peak_sigma=float(cfg["pop_m_peak_sigma"]),
+                pop_m_peak_frac=float(cfg["pop_m_peak_frac"]),
+                event_qc_mode=str(args.event_qc_mode),  # type: ignore[arg-type]
+                event_min_finite_frac=float(args.event_min_finite_frac),
+                event_min_ess=float(args.event_min_ess),
+                prior="uniform",
+            )
+        except Exception as e:
+            per_cfg.append({"config": dict(cfg), "error": str(e)})
+            print(f"[pop {name}] ERROR: {e}", flush=True)
+            continue
+
+        _print_one(f"[pop {name}]", res)
+        (json_dir / f"gr_h0_selection_on_{name}.json").write_text(json.dumps(res, indent=2, sort_keys=True) + "\n")
         p = _normalize(np.asarray(res["posterior"], dtype=float))
+        ok_cfgs.append(dict(cfg))
         p_list.append(p)
-        per_cfg.append({"config": cfg.__dict__, "result_summary": dict(res.get("summary", {})), "H0_map_at_edge": bool(res.get("H0_map_at_edge", False))})
+        per_cfg.append({"config": dict(cfg), "result_summary": dict(res.get("summary", {})), "H0_map_at_edge": bool(res.get("H0_map_at_edge", False))})
+
+    if not p_list:
+        raise ValueError("All population configs failed; see pop_marginal_summary.json for errors.")
 
     # Equal-weight mixture of conditional posteriors (stability average; not evidence-weighted).
     p_mix = _normalize(np.mean(np.stack(p_list, axis=0), axis=0))
@@ -280,6 +357,12 @@ def main() -> int:
             "snr_binned_nbins": int(args.snr_binned_nbins),
             "mchirp_binned_nbins": int(args.mchirp_binned_nbins),
             "weight_mode": str(args.weight_mode),
+            "pop_mode": str(args.pop_mode),
+            "lvk_pop_result_json": str(Path(args.lvk_pop_result_json).expanduser().resolve())
+            if args.lvk_pop_result_json is not None
+            else None,
+            "lvk_n_draws": int(args.lvk_n_draws),
+            "lvk_seed": int(args.lvk_seed),
             "pop_params_shared": {
                 "pop_m1_alpha": float(args.pop_m1_alpha),
                 "pop_m_min": float(args.pop_m_min),
@@ -291,7 +374,7 @@ def main() -> int:
                 "pop_m_peak_frac": float(args.pop_m_peak_frac),
             },
         },
-        "pop_grid": [cfg.__dict__ for cfg in pop_grid],
+        "pop_grid": pop_cfgs,
         "per_config": per_cfg,
         "mixture": {"posterior": [float(x) for x in p_mix.tolist()], "summary": mix_summary, "p50_spread": spread},
     }
@@ -299,8 +382,8 @@ def main() -> int:
 
     # Plot overlay.
     plt.figure(figsize=(8.5, 4.6))
-    for cfg, p in zip(pop_grid, p_list, strict=True):
-        plt.plot(H0_grid, p, lw=1.0, alpha=0.7, label=cfg.name)
+    for cfg, p in zip(ok_cfgs, p_list, strict=True):
+        plt.plot(H0_grid, p, lw=1.0, alpha=0.7, label=str(cfg.get("name", "cfg")))
     plt.plot(H0_grid, p_mix, "k-", lw=2.2, label="mixture (equal-weight)")
     plt.xlabel(r"$H_0$ [km/s/Mpc]")
     plt.ylabel("posterior (normalized on grid)")
