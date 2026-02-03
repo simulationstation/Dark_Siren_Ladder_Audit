@@ -50,6 +50,35 @@ def _quantile(x: np.ndarray, q: float) -> float:
     return float(np.quantile(x, q))
 
 
+def _normalize_prob(p: np.ndarray) -> np.ndarray:
+    p = np.asarray(p, dtype=float)
+    s = float(np.sum(p))
+    if not (np.isfinite(s) and s > 0.0):
+        raise ValueError("Posterior normalization failed (non-positive sum).")
+    return p / s
+
+
+def _prob_from_logp(logp: np.ndarray) -> np.ndarray:
+    logp = np.asarray(logp, dtype=float)
+    if logp.ndim != 1 or logp.size < 2 or np.any(~np.isfinite(logp)):
+        raise ValueError("logp must be a 1D finite array with >=2 entries.")
+    logp = logp - float(np.max(logp))
+    return _normalize_prob(np.exp(logp))
+
+
+def _summary_from_posterior(H0: np.ndarray, p: np.ndarray) -> dict[str, float]:
+    H0 = np.asarray(H0, dtype=float)
+    p = _normalize_prob(np.asarray(p, dtype=float))
+    cdf = np.cumsum(p)
+    q16 = float(np.interp(0.16, cdf, H0))
+    q50 = float(np.interp(0.50, cdf, H0))
+    q84 = float(np.interp(0.84, cdf, H0))
+    mean = float(np.sum(p * H0))
+    sd = float(np.sqrt(np.sum(p * (H0 - mean) ** 2)))
+    H0_map = float(H0[int(np.argmax(p))])
+    return {"H0_map": H0_map, "mean": mean, "sd": sd, "p16": q16, "p50": q50, "p84": q84}
+
+
 @dataclass(frozen=True)
 class Gate2Summary:
     json_path: Path
@@ -220,6 +249,130 @@ def _print_single_report(summary: Gate2Summary, *, top_n: int, json_obj: dict[st
         print(f"  {name}: b={b:.3f} ΔlogZ={delta:+.3f} ess_min={ess_min:.2f}")
 
 
+def _parse_float_list(spec: str, *, name: str) -> list[float]:
+    items = [s.strip() for s in str(spec).split(",") if s.strip()]
+    out: list[float] = []
+    for s in items:
+        try:
+            out.append(float(s))
+        except Exception as e:
+            raise ValueError(f"Invalid {name} entry '{s}': {e}") from e
+    return out
+
+
+def _parse_int_list(spec: str, *, name: str) -> list[int]:
+    items = [s.strip() for s in str(spec).split(",") if s.strip()]
+    out: list[int] = []
+    for s in items:
+        try:
+            out.append(int(s))
+        except Exception as e:
+            raise ValueError(f"Invalid {name} entry '{s}': {e}") from e
+    return out
+
+
+def _event_records_from_gate2_json(json_obj: dict[str, Any]) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    H0_grid = _as_float_array(json_obj.get("H0_grid"), name="H0_grid")
+    evs = json_obj.get("events")
+    if not isinstance(evs, list) or not evs:
+        raise ValueError("Gate-2 JSON missing non-empty 'events' list.")
+    out: list[dict[str, Any]] = []
+    for ev in evs:
+        if not isinstance(ev, dict):
+            continue
+        name = str(ev.get("event", ""))
+        ll = ev.get("logL_H0")
+        if not isinstance(ll, list):
+            continue
+        ll_arr = np.asarray(ll, dtype=float)
+        if ll_arr.shape != H0_grid.shape or np.any(~np.isfinite(ll_arr)):
+            continue
+        ess_min = ev.get("ess_min")
+        finite_frac = ev.get("finite_frac")
+        try:
+            ess_min_f = float(ess_min) if ess_min is not None else float("nan")
+        except Exception:
+            ess_min_f = float("nan")
+        try:
+            finite_frac_f = float(finite_frac) if finite_frac is not None else float("nan")
+        except Exception:
+            finite_frac_f = float("nan")
+
+        out.append(
+            {
+                "event": name,
+                "logL_H0": ll_arr,
+                "ess_min": ess_min_f,
+                "finite_frac": finite_frac_f,
+            }
+        )
+    if not out:
+        raise ValueError("No usable per-event logL_H0 arrays found in Gate-2 JSON.")
+    return H0_grid, out
+
+
+def _recompute_posterior_from_events(
+    *,
+    H0_grid: np.ndarray,
+    events: list[dict[str, Any]],
+    log_alpha_grid: np.ndarray | None,
+) -> dict[str, Any]:
+    H0_grid = np.asarray(H0_grid, dtype=float)
+    if H0_grid.ndim != 1 or H0_grid.size < 2:
+        raise ValueError("Invalid H0_grid.")
+    if not events:
+        raise ValueError("No events provided.")
+
+    logL_sum = np.zeros_like(H0_grid, dtype=float)
+    for ev in events:
+        ll = np.asarray(ev["logL_H0"], dtype=float)
+        ll = ll - float(np.max(ll))  # stable; only changes by additive constants
+        logL_sum = logL_sum + ll
+
+    sel_term = None
+    if log_alpha_grid is not None:
+        log_alpha_grid = np.asarray(log_alpha_grid, dtype=float)
+        if log_alpha_grid.shape != H0_grid.shape or np.any(~np.isfinite(log_alpha_grid)):
+            raise ValueError("log_alpha_grid shape mismatch or non-finite values.")
+        sel_term = -float(len(events)) * log_alpha_grid
+
+    logL_total = logL_sum + (sel_term if sel_term is not None else 0.0)
+
+    p = _prob_from_logp(logL_total)
+    summary = _summary_from_posterior(H0_grid, p)
+    H0_map = float(summary["H0_map"])
+    edge = _edge_side(H0_grid, H0_map)
+
+    logH = np.log(np.clip(H0_grid, 1e-300, np.inf))
+    slope_event = _slope(logL_sum, logH)
+    delta_event = float(logL_sum[-1] - logL_sum[0])
+    slope_sel = None
+    delta_sel = None
+    if sel_term is not None:
+        slope_sel = _slope(sel_term, logH)
+        delta_sel = float(sel_term[-1] - sel_term[0])
+    slope_total = _slope(logL_total, logH)
+    delta_total = float(logL_total[-1] - logL_total[0])
+    dlogH = float(logH[-1] - logH[0])
+    exp_event_per_event = float("nan")
+    if math.isfinite(dlogH) and dlogH != 0.0:
+        exp_event_per_event = float(delta_event / dlogH / float(len(events)))
+
+    return {
+        "n_events": int(len(events)),
+        "H0_map": H0_map,
+        "H0_edge": edge,
+        "summary": summary,
+        "slope_event": slope_event,
+        "slope_sel": slope_sel,
+        "slope_total": slope_total,
+        "delta_event": delta_event,
+        "delta_sel": delta_sel,
+        "delta_total": delta_total,
+        "exp_event_per_event": exp_event_per_event,
+    }
+
+
 def _scan_gate2_jsons(outputs_dir: Path) -> list[Path]:
     out: list[Path] = []
     for p in outputs_dir.glob("**/json/gr_h0_selection_*.json"):
@@ -248,6 +401,14 @@ def main() -> int:
     ap_one.add_argument("--json", type=Path, required=True, help="Path to a gr_h0_selection_*.json file.")
     ap_one.add_argument("--top-n", type=int, default=10, help="How many events to print in top/bottom lists (default 10).")
 
+    ap_filter = sub.add_parser("filter", help="Recompute posterior after filtering/dropping events; writes a CSV of summaries.")
+    ap_filter.add_argument("--json", type=Path, required=True, help="Path to a gr_h0_selection_*.json file (must include per-event logL_H0 arrays).")
+    ap_filter.add_argument("--out", type=Path, default=Path("FINDINGS") / "gate2_filter.csv", help="CSV to write (default FINDINGS/gate2_filter.csv).")
+    ap_filter.add_argument("--min-ess-list", default="0,1,10,100,1000", help="Comma list of ESS thresholds to scan (default 0,1,10,100,1000).")
+    ap_filter.add_argument("--min-finite-frac-list", default="0.0,0.5,0.9", help="Comma list of finite_frac thresholds to scan (default 0.0,0.5,0.9).")
+    ap_filter.add_argument("--drop-worst-ess-list", default="0,1,2,3,5", help="Comma list of N to drop by lowest ess_min (default 0,1,2,3,5).")
+    ap_filter.add_argument("--drop-top-b-list", default="0,1,2,3,5", help="Comma list of N to drop by highest b exponent (default 0,1,2,3,5).")
+
     ap_scan = sub.add_parser("scan", help="Scan outputs/**/json/gr_h0_selection_*.json into a CSV summary.")
     ap_scan.add_argument("--outputs", type=Path, default=Path("outputs"), help="Outputs dir to scan (default outputs/).")
     ap_scan.add_argument("--out", type=Path, default=Path("FINDINGS") / "gate2_jig.csv", help="CSV to write (default FINDINGS/gate2_jig.csv).")
@@ -260,6 +421,94 @@ def main() -> int:
         d = _read_json(path)
         s = summarize_gate2_json(path)
         _print_single_report(s, top_n=int(args.top_n), json_obj=d)
+        return 0
+
+    if args.cmd == "filter":
+        path = Path(args.json).expanduser().resolve()
+        d = _read_json(path)
+        H0_grid, recs = _event_records_from_gate2_json(d)
+        log_alpha_grid = None
+        if d.get("log_alpha_grid") is not None:
+            log_alpha_grid = _as_float_array(d.get("log_alpha_grid"), name="log_alpha_grid")
+
+        logH = np.log(np.clip(H0_grid, 1e-300, np.inf))
+        for r in recs:
+            ll = np.asarray(r["logL_H0"], dtype=float)
+            r["b"] = _slope(ll, logH)
+
+        rows: list[dict[str, Any]] = []
+
+        def _add_row(tag: str, *, kept: list[dict[str, Any]], detail: str, dropped: list[str]) -> None:
+            res = _recompute_posterior_from_events(H0_grid=H0_grid, events=kept, log_alpha_grid=log_alpha_grid)
+            ess = np.asarray([float(x.get("ess_min", float("nan"))) for x in kept], dtype=float)
+            ff = np.asarray([float(x.get("finite_frac", float("nan"))) for x in kept], dtype=float)
+            b = np.asarray([float(x.get("b", float("nan"))) for x in kept], dtype=float)
+            s = res.get("summary", {}) or {}
+            rows.append(
+                {
+                    "json_path": str(path),
+                    "tag": tag,
+                    "detail": detail,
+                    "n_events": int(res["n_events"]),
+                    "H0_map": float(res["H0_map"]),
+                    "H0_edge": str(res["H0_edge"]),
+                    "p50": float(s.get("p50", float("nan"))),
+                    "p16": float(s.get("p16", float("nan"))),
+                    "p84": float(s.get("p84", float("nan"))),
+                    "mean": float(s.get("mean", float("nan"))),
+                    "sd": float(s.get("sd", float("nan"))),
+                    "slope_event": float(res["slope_event"]),
+                    "slope_sel": float(res["slope_sel"]) if res.get("slope_sel") is not None else float("nan"),
+                    "slope_total": float(res["slope_total"]),
+                    "delta_event": float(res["delta_event"]),
+                    "delta_sel": float(res["delta_sel"]) if res.get("delta_sel") is not None else float("nan"),
+                    "delta_total": float(res["delta_total"]),
+                    "exp_event_per_event": float(res["exp_event_per_event"]),
+                    "ess_min_min": float(np.nanmin(ess)) if ess.size else float("nan"),
+                    "ess_min_median": float(np.nanmedian(ess)) if ess.size else float("nan"),
+                    "finite_frac_min": float(np.nanmin(ff)) if ff.size else float("nan"),
+                    "b_median": float(np.nanmedian(b)) if b.size else float("nan"),
+                    "dropped_events": ";".join(dropped[:50]) + (";..." if len(dropped) > 50 else ""),
+                }
+            )
+
+        # Baseline row.
+        _add_row("baseline", kept=list(recs), detail="none", dropped=[])
+
+        # Threshold scans.
+        for thr in _parse_float_list(str(args.min_ess_list), name="min-ess-list"):
+            kept = [r for r in recs if np.isfinite(float(r.get("ess_min", float("nan")))) and float(r["ess_min"]) >= float(thr)]
+            dropped = [r["event"] for r in recs if r not in kept]
+            if kept:
+                _add_row("min_ess", kept=kept, detail=f">={thr:g}", dropped=dropped)
+
+        for thr in _parse_float_list(str(args.min_finite_frac_list), name="min-finite-frac-list"):
+            kept = [r for r in recs if np.isfinite(float(r.get("finite_frac", float("nan")))) and float(r["finite_frac"]) >= float(thr)]
+            dropped = [r["event"] for r in recs if r not in kept]
+            if kept:
+                _add_row("min_finite_frac", kept=kept, detail=f">={thr:g}", dropped=dropped)
+
+        # Drop scans.
+        for n_drop in _parse_int_list(str(args.drop_worst_ess_list), name="drop-worst-ess-list"):
+            n_drop = max(0, int(n_drop))
+            ordered = sorted(recs, key=lambda r: float(r.get("ess_min", float("nan"))))
+            dropped_recs = ordered[:n_drop]
+            kept = [r for r in recs if r not in dropped_recs]
+            dropped = [r["event"] for r in dropped_recs]
+            if kept:
+                _add_row("drop_worst_ess", kept=kept, detail=str(n_drop), dropped=dropped)
+
+        for n_drop in _parse_int_list(str(args.drop_top_b_list), name="drop-top-b-list"):
+            n_drop = max(0, int(n_drop))
+            ordered = sorted(recs, key=lambda r: float(r.get("b", float("nan"))), reverse=True)
+            dropped_recs = ordered[:n_drop]
+            kept = [r for r in recs if r not in dropped_recs]
+            dropped = [r["event"] for r in dropped_recs]
+            if kept:
+                _add_row("drop_top_b", kept=kept, detail=str(n_drop), dropped=dropped)
+
+        _write_csv(rows, Path(args.out))
+        print(f"[gate2_jig] wrote {args.out} ({len(rows)} rows)")
         return 0
 
     if args.cmd == "scan":
@@ -312,4 +561,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

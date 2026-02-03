@@ -555,7 +555,11 @@ def compute_hierarchical_pe_logL_draws(
                 # Coordinate Jacobian to express p(m1_source, q) in terms of (Mc_det, q):
                 #   m1_source = Mc_det * (1+q)^(1/5) / q^(3/5) / (1+z)
                 # => dm1_source/dMc_det = (1+q)^(1/5) / q^(3/5) / (1+z)
-            log_mass_coord_jac = (1.0 / 5.0) * np.log1p(q_g) - (3.0 / 5.0) * np.log(np.clip(q_g, 1e-300, np.inf)) - np.log1p(z_g)
+                log_mass_coord_jac = (
+                    (1.0 / 5.0) * np.log1p(q_g)
+                    - (3.0 / 5.0) * np.log(np.clip(q_g, 1e-300, np.inf))
+                    - np.log1p(z_g)
+                )
 
             logw = log_z + log_jac + log_m + log_mass_coord_jac - log_pi_denom
             sm = smooth_logweights(logw, method=importance_smoothing, truncate_tau=importance_truncate_tau)

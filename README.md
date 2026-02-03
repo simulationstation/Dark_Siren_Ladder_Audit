@@ -69,6 +69,14 @@ Or scan all Gate‑2 outputs into a summary CSV:
 ./.venv/bin/python scripts/gate2_jig.py scan --outputs outputs --out FINDINGS/gate2_jig.csv
 ```
 
+Or recompute the posterior after dropping/thresholding events (useful to diagnose single-event dominance):
+
+```bash
+./.venv/bin/python scripts/gate2_jig.py filter \
+  --json outputs/<RUN>/json/gr_h0_selection_on_inv_sampling_pdf.json \
+  --out FINDINGS/gate2_filter.csv
+```
+
 ## Gate‑2 ladder (toy cancellation + incremental complexity)
 
 To avoid “eternal knob turning”, `scripts/run_siren_gate2_ladder.py` runs:
