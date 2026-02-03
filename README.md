@@ -193,3 +193,28 @@ We fixed a real bug in the hierarchical PE implementation:
 - Regression test: `tests/test_dark_sirens_hierarchical_pe_mass_coord_jacobian.py`
 
 This fix is in the `main` branch history (commit `4dba965`).
+
+### 7) Isolator re-run with 2D selection proxy (`snr_mchirp_binned`)
+
+We extended the **selection alpha** calculator to support a simple 2D detectability proxy
+\(p_{\rm det}(\mathrm{SNR},\mathcal{M}_{\rm det})\) (`snr_mchirp_binned`) and re-ran the
+real-data isolator battery under the same remembered population assumptions as the Gate‑2 control
+(comoving_uniform + PowerLaw+Peak).
+
+- Code:
+  - `src/entropy_horizon_recon/dark_sirens_selection.py` now supports `det_model=snr_mchirp_binned` for selection alpha.
+  - `scripts/run_siren_selection_alpha.py` adds `--det-model snr_mchirp_binned --mchirp-binned-nbins ...`.
+- Output dir: `outputs/workcycle_siren_popon_snr_mchirp_20260203_232125UTC`
+  - Selection alpha summary: `outputs/workcycle_siren_popon_snr_mchirp_20260203_232125UTC/selection_alpha/tables/selection_alpha_summary.json`
+  - Isolator totals: `outputs/workcycle_siren_popon_snr_mchirp_20260203_232125UTC/isolator_totals.json`
+
+Key totals (mode=`none`, 33 events; all scrambles completed with `n_skip=0`):
+- \(\Delta \mathrm{LPD}_{\rm data} \approx -2.655\) (data term prefers GR)
+- \(\Delta \mathrm{LPD}_{\rm sel} \approx +4.870\) (selection term prefers μ)
+- \(\Delta \mathrm{LPD}_{\rm total} \approx +2.214\) (net preference flips to μ)
+
+Event-wise (mode=`none`):
+- data term: GR wins in 32/33 events
+- total (data+selection): μ wins in 25/33 events
+
+Takeaway: the “ghost” pattern persists under a more selection-realistic proxy — the data term still prefers GR, while selection bookkeeping can dominate and flip the sign of the total.
