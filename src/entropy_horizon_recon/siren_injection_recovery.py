@@ -572,7 +572,6 @@ def generate_synthetic_detected_events_from_injections(
             )
         )
 
-    _ = thresh  # Keep in scope for debugging/repro (written in truths via p_det_true).
     return out
 
 
