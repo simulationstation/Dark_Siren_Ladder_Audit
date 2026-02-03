@@ -173,8 +173,8 @@ def main() -> int:
     ap.add_argument(
         "--pop-m-taper-delta",
         type=float,
-        default=0.0,
-        help="Smooth taper width (Msun) for --pop-mass-mode=powerlaw_q_smooth (default 0).",
+        default=3.0,
+        help="Smooth taper width (Msun) for smooth mass models (powerlaw_q_smooth / powerlaw_peak_q_smooth). Must be >0 (default 3).",
     )
     ap.add_argument("--pop-m-peak", type=float, default=35.0, help="Gaussian peak location in m1 (Msun) for --pop-mass-mode=powerlaw_peak_q_smooth.")
     ap.add_argument("--pop-m-peak-sigma", type=float, default=5.0, help="Gaussian peak sigma in m1 (Msun) for --pop-mass-mode=powerlaw_peak_q_smooth.")
