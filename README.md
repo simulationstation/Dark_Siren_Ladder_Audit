@@ -53,6 +53,22 @@ Many siren tests in this repo score **mu (entropy-modified)** vs **GR** using a 
 ./.venv/bin/python scripts/build_run_log.py --outputs outputs --out FINDINGS/run_log.csv
 ```
 
+## Gate‑2 diagnostics jig
+
+To diagnose why Gate‑2 \(H_0\) posteriors slam into grid edges, use the Gate‑2 jig to compute per-term slopes and per-event “effective \(H_0\) exponents” from an existing `gr_h0_selection_*.json`:
+
+```bash
+./.venv/bin/python scripts/gate2_jig.py one \
+  --json outputs/<RUN>/json/gr_h0_selection_on_inv_sampling_pdf.json \
+  --top-n 10
+```
+
+Or scan all Gate‑2 outputs into a summary CSV:
+
+```bash
+./.venv/bin/python scripts/gate2_jig.py scan --outputs outputs --out FINDINGS/gate2_jig.csv
+```
+
 ## Third-party software
 
 This project uses (and optionally benchmarks against) open-source gravitational-wave community software, including:
