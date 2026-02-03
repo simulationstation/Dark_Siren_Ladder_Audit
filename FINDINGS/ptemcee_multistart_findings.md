@@ -1,0 +1,19 @@
+# PTEMCEE multi-start findings (FSBAO + lensing)
+
+## Per-seed summary
+
+| Seed | Ωm0 p50 | Ωm0 p16 | Ωm0 p84 | m mean | m std | P(m>0) | P(|m|<eps) | eps |
+|---|---|---|---|---|---|---|---|---|
+| 101 | 0.3530 | 0.2976 | 0.3821 | -0.0766 | 0.1577 | 0.278 | 0.043 | 0.010 |
+| 202 | 0.3574 | 0.3041 | 0.3888 | -0.1201 | 0.1680 | 0.216 | 0.022 | 0.010 |
+| 303 | 0.3481 | 0.3000 | 0.3840 | -0.0888 | 0.1740 | 0.270 | 0.030 | 0.010 |
+| 404 | 0.3504 | 0.3026 | 0.3830 | -0.0997 | 0.1661 | 0.250 | 0.040 | 0.010 |
+| 505 | 0.3504 | 0.2989 | 0.3850 | -0.1064 | 0.1707 | 0.246 | 0.031 | 0.010 |
+
+## Aggregate
+- Ωm0 p50 span across seeds: **0.0094**
+- m mean is negative for all runs; P(m>0) remains < 0.30 in all starts (weak evidence for m>0).
+
+## Interpretation
+- ptemcee multi-start improves Ωm0 stability substantially (span < 0.01).
+- m remains small and negative; no robust positive departure from BH.
