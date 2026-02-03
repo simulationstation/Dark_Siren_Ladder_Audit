@@ -220,7 +220,12 @@ def main() -> int:
     # 3) ICAROGW oracle (distance cache computed via its isolated venv).
     alpha_icarogw = None
     if not bool(args.no_icarogw):
-        icarogw_py = Path(str(args.icarogw_python)).expanduser().resolve()
+        # NOTE: do not `.resolve()` here: venv interpreters are often symlinks to the system
+        # python, and resolving would bypass the venv's `pyvenv.cfg` and site-packages.
+        icarogw_py = Path(str(args.icarogw_python)).expanduser()
+        if not icarogw_py.is_absolute():
+            icarogw_py = Path.cwd() / icarogw_py
+        icarogw_py = icarogw_py.absolute()
         if not icarogw_py.exists():
             out_summary["icarogw_error"] = f"Missing ICAROGW python at {icarogw_py}"
         else:
