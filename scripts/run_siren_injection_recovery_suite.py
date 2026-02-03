@@ -88,6 +88,14 @@ def _write_json(path: Path, obj: Any) -> None:
     path.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n")
 
 
+def _available_cpu_count() -> int:
+    """Best-effort available CPU count (respects taskset/affinity when present)."""
+    try:
+        return len(os.sched_getaffinity(0))  # type: ignore[attr-defined]
+    except Exception:
+        return int(os.cpu_count() or 1)
+
+
 def _load_summary_from_rep(rep_path: Path) -> dict[str, Any]:
     d = json.loads(rep_path.read_text())
     s = dict(d.get("summary", {}))
@@ -396,7 +404,7 @@ def main() -> int:
         if bool(args.smoke):
             n_proc = min(max(n_proc, 1), 2) if n_proc > 0 else 1
         if n_proc <= 0:
-            n_proc = int(os.cpu_count() or 1)
+            n_proc = int(_available_cpu_count())
         n_proc = max(1, min(n_proc, int(n_rep)))
 
         if not todo:
