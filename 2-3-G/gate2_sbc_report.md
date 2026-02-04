@@ -149,3 +149,84 @@ Conclusion:
 2) **Importance-weight smoothing** (`importance_smoothing=truncate`) does not change the result.
    - Output bundle: `outputs/gate2_sbc_ablation_smoothing_20260204_054359UTC`
    - `truncate` vs `none` gives identical `u_h0_on_*` in the tested cases, suggesting this is not a simple heavy-tail/ESS stabilization issue.
+
+## Volume-scaling bookkeeping (pop z vs selection term)
+
+We ran a 2×2 matrix toggling the optional \(H_0^{-3}\) “volume scaling” factor in:
+
+- the **population z prior** inside the per-event term (`--pop-z-include-h0-volume-scaling`), and
+- the **selection normalization** (`--selection-include-h0-volume-scaling`).
+
+Output bundle:
+- `outputs/gate2_sbc_volume_scaling_matrix_20260204_062145UTC`
+
+Aggregate selection‑ON SBC metrics:
+
+| case | pop_z_include_h0_volume_scaling | selection_include_h0_volume_scaling | u_h0_on_mean | u_h0_on_ks | note |
+|---|---:|---:|---:|---:|---|
+| `popz0_sel0` | 0 | 0 | 0.3349 | 0.2765 | baseline |
+| `popz1_sel0` | 1 | 0 | 0.9955 | 0.9655 | catastrophic (posterior pins to low edge) |
+| `popz0_sel1` | 0 | 1 | 0.0352 | 0.8554 | catastrophic (posterior pins to high edge) |
+| `popz1_sel1` | 1 | 1 | 0.3349 | 0.2765 | cancels back to baseline |
+
+Interpretation:
+- If the volume scaling is included in **both** places, it cancels (up to constants) and you get the same behavior as baseline.
+- If it is included in **only one** place, Gate‑2 becomes violently unstable (edge‑peaked posteriors), as expected for a bookkeeping mismatch.
+- This strongly suggests our **remaining SBC failure is not “fixed” by flipping this knob**; rather, **mismatches here are a known failure mode to avoid**.
+
+## PE Monte Carlo size (does more PE sampling fix SBC?)
+
+We tested whether the selection‑ON SBC failure is simply due to Monte Carlo noise from too few PE samples per event.
+
+Output bundle:
+- `outputs/gate2_sbc_pe_samples_test_20260204_064152UTC/pe50k`
+
+Setup differences vs baseline:
+- `pe_n_samples=50,000` (vs 12,000)
+- `n_rep=128` (vs 256)
+
+Result (selection‑ON SBC):
+- baseline (`popz0_sel0`): `u_h0_on_mean≈0.3349`, `u_h0_on_ks≈0.2765`
+- `pe50k`: `u_h0_on_mean≈0.3268`, `u_h0_on_ks≈0.2578`
+
+Conclusion:
+- Increasing PE samples by \(\sim 4\times\) **does not materially restore Uniform\([0,1]\)** behavior for \(u\).
+- It can reduce some “edge‑MAP” artifacts, but the core calibration failure persists.
+
+## Mass-measurement strength (ablation)
+
+We also tested whether making mass posteriors “much stronger” or “much weaker” changes SBC under the typical popZ+mass config.
+
+Output bundle:
+- `outputs/gate2_sbc_mass_noise_matrix_20260204_062643UTC`
+
+Selection‑ON SBC metrics:
+
+| case | (mc_frac_sigma0, q_sigma0) | u_h0_on_mean | u_h0_on_ks |
+|---|---|---:|---:|
+| `mass_baseline` | (0.02, 0.08) | 0.3458 | 0.2372 |
+| `mass_weak` | (0.05, 0.15) | 0.3271 | 0.2754 |
+| `mass_strong` | (0.005, 0.02) | 0.3556 | 0.2377 |
+
+Conclusion:
+- The Gate‑2 SBC failure is **not primarily driven by “mass posteriors too strong”** in this synthetic setup.
+
+## New diagnostic: term‑slope decomposition (to avoid endless knob‑turning)
+
+We added a cheap monotonicity diagnostic to the suite runner:
+
+- per‑replicate slopes vs \(\log H_0\) for:
+  - event term \(\sum_i \log L_i(H_0)\) (selection‑OFF)
+  - selection term \(\log \alpha(H_0)\)
+  - total selection‑ON term \(\sum_i \log L_i(H_0) - N \log \alpha(H_0)\)
+- new suite artifacts:
+  - `tables/suite_summary.csv` columns: `slope_logLsum_off`, `slope_log_alpha_on`, `slope_logL_total_on`
+  - `tables/suite_aggregate.json` keys: `slope_*_mean`, `slope_*_frac_pos`
+  - figures: `figures/slope_logLsum_off_hist.png`, `figures/bias_vs_slope_logLsum_off.png`
+
+In the baseline `popz0_sel0` run (above), these aggregates show:
+- `slope_logLsum_off_mean ≈ +0.76` (event term prefers higher \(H_0\))
+- `slope_log_alpha_on_mean ≈ +0.016` (so \(-N\log\alpha\) prefers lower \(H_0\), partially cancelling)
+- `slope_logL_total_on_mean ≈ +0.15` (net preference still drifts to higher \(H_0\))
+
+This matches the qualitative SBC symptom: \(u\) collapses toward 0 because the selection-on posterior is still typically shifted high relative to truth.

@@ -141,6 +141,22 @@ def _load_summary_from_rep(rep_path: Path) -> dict[str, Any]:
         cdf = np.cumsum(p)
         return float(np.interp(float(q), cdf, g))
 
+    def _fit_slope(grid: list[float], y: list[float]) -> float:
+        x = np.asarray(grid, dtype=float)
+        y = np.asarray(y, dtype=float)
+        if x.ndim != 1 or y.ndim != 1 or x.shape != y.shape or x.size < 2:
+            return float("nan")
+        m = np.isfinite(x) & np.isfinite(y)
+        if int(np.count_nonzero(m)) < 5:
+            return float("nan")
+        x = x[m]
+        y = y[m]
+        xc = x - float(np.mean(x))
+        denom = float(np.sum(xc**2))
+        if not (np.isfinite(denom) and denom > 0.0):
+            return float("nan")
+        return float(np.sum(xc * y) / denom)
+
     def _cdf_at(grid: list[float], posterior: list[float], x: float) -> float:
         g = np.asarray(grid, dtype=float)
         p = np.asarray(posterior, dtype=float)
@@ -174,6 +190,12 @@ def _load_summary_from_rep(rep_path: Path) -> dict[str, Any]:
     u_h0_off = _cdf_at(h0_grid, off.get("posterior", []), float(h0_true))
     u_h0_on = _cdf_at(h0_grid, on.get("posterior", []), float(h0_true))
 
+    # Term slopes (diagnostic for monotone-in-H0 failures).
+    slope_logLsum_off = _fit_slope(h0_grid, off.get("logL_sum_events_rel", []))
+    slope_logLsum_on = _fit_slope(h0_grid, on.get("logL_sum_events_rel", []))
+    slope_log_alpha_on = _fit_slope(h0_grid, on.get("log_alpha_grid", []))
+    slope_logL_total_on = _fit_slope(h0_grid, on.get("logL_H0_rel", []))
+
     pp = dict(s.get("pe_pp", {}))
     pp_dL = dict(pp.get("dL", {}))
 
@@ -204,6 +226,10 @@ def _load_summary_from_rep(rep_path: Path) -> dict[str, Any]:
         "H0_p975_on": float(q975_on),
         "u_h0_off": float(u_h0_off),
         "u_h0_on": float(u_h0_on),
+        "slope_logLsum_off": float(slope_logLsum_off),
+        "slope_logLsum_on": float(slope_logLsum_on),
+        "slope_log_alpha_on": float(slope_log_alpha_on),
+        "slope_logL_total_on": float(slope_logL_total_on),
         "bias_p50_on": _safe_float(s.get("bias_p50_selection_on")),
         "bias_map_on": _safe_float(s.get("bias_map_selection_on")),
         "pp_dL_mean": _safe_float(pp_dL.get("mean")),
@@ -615,6 +641,10 @@ def main() -> int:
     cov95 = float(np.nanmean((h0_true_arr >= p025_on) & (h0_true_arr <= p975_on)))
     pp_dL_ks = np.asarray([_safe_float(r.get("pp_dL_ks")) for r in rows], dtype=float)
 
+    slope_logLsum_off = np.asarray([_safe_float(r.get("slope_logLsum_off")) for r in rows], dtype=float)
+    slope_log_alpha_on = np.asarray([_safe_float(r.get("slope_log_alpha_on")) for r in rows], dtype=float)
+    slope_logL_total_on = np.asarray([_safe_float(r.get("slope_logL_total_on")) for r in rows], dtype=float)
+
     u_h0_on = np.asarray([_safe_float(r.get("u_h0_on")) for r in rows], dtype=float)
     u_h0_on = u_h0_on[np.isfinite(u_h0_on)]
     if u_h0_on.size:
@@ -679,6 +709,12 @@ def main() -> int:
         "u_h0_on_mean": float(u_h0_on_mean),
         "u_h0_on_ks": float(u_h0_on_ks),
         "pp_dL_ks_mean": float(np.nanmean(pp_dL_ks)),
+        "slope_logLsum_off_mean": float(np.nanmean(slope_logLsum_off)),
+        "slope_logLsum_off_frac_pos": float(np.nanmean((slope_logLsum_off > 0.0).astype(float))),
+        "slope_log_alpha_on_mean": float(np.nanmean(slope_log_alpha_on)),
+        "slope_log_alpha_on_frac_pos": float(np.nanmean((slope_log_alpha_on > 0.0).astype(float))),
+        "slope_logL_total_on_mean": float(np.nanmean(slope_logL_total_on)),
+        "slope_logL_total_on_frac_pos": float(np.nanmean((slope_logL_total_on > 0.0).astype(float))),
         "pp_dL_all_n": int(pp_all_dL_arr.size),
         "pp_dL_all_mean": float(pp_all_mean),
         "pp_dL_all_ks": float(pp_all_ks),
@@ -811,6 +847,30 @@ def main() -> int:
             plt.title("SBC u-histogram (selection ON)")
             plt.tight_layout()
             plt.savefig(fig_dir / "sbc_u_h0_on_hist.png", dpi=160)
+            plt.close()
+
+        # Term-slope diagnostics.
+        m = np.isfinite(slope_logLsum_off) & np.isfinite(bias)
+        if np.any(m):
+            plt.figure(figsize=(7.2, 4.0))
+            plt.hist(np.clip(slope_logLsum_off[m], -2.0, 2.0), bins=40, alpha=0.85)
+            plt.axvline(0.0, color="k", lw=1.2)
+            plt.xlabel(r"slope of $\log L_\mathrm{events}(H_0)$  (selection OFF)")
+            plt.ylabel("replicate count")
+            plt.title("Event-term slope diagnostic")
+            plt.tight_layout()
+            plt.savefig(fig_dir / "slope_logLsum_off_hist.png", dpi=160)
+            plt.close()
+
+            plt.figure(figsize=(5.2, 4.8))
+            plt.scatter(slope_logLsum_off[m], bias[m], s=14, alpha=0.75)
+            plt.axhline(0.0, color="k", lw=1.0)
+            plt.axvline(0.0, color="k", lw=1.0)
+            plt.xlabel(r"slope of $\log L_\mathrm{events}(H_0)$")
+            plt.ylabel(r"bias in $H_0$ p50 (selection ON)")
+            plt.title("Bias vs event-term slope")
+            plt.tight_layout()
+            plt.savefig(fig_dir / "bias_vs_slope_logLsum_off.png", dpi=160)
             plt.close()
     else:
         print("[note] matplotlib not available; skipping figures", flush=True)
