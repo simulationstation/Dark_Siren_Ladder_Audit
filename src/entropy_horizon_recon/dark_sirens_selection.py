@@ -308,10 +308,11 @@ def compute_selection_alpha_from_injections(
     convention: Literal["A", "B"] = "A",
     z_max: float,
     snr_threshold: float | None = None,
-    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned"] = "snr_binned",
+    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"] = "snr_binned",
     snr_offset: float = 0.0,
     snr_binned_nbins: int = 200,
     mchirp_binned_nbins: int = 20,
+    q_binned_nbins: int = 10,
     weight_mode: Literal["none", "inv_sampling_pdf"] = "none",
     mu_det_distance: Literal["gw", "em"] = "gw",
     # Optional population importance-weighting (used in addition to inv_sampling_pdf).
@@ -340,8 +341,11 @@ def compute_selection_alpha_from_injections(
     It captures the leading dependence of detectability on luminosity distance without committing
     to a full population model (masses/spins/rate evolution).
 
-    The `snr_mchirp_binned` option extends the proxy to a simple 2D p_det(SNR, Mchirp_det) table,
-    which can reduce selection-normalization bias when detectability depends strongly on mass.
+    The `snr_mchirp_binned` option extends the proxy to a simple 2D p_det(SNR, Mchirp_det) table.
+
+    The `snr_mchirp_q_binned` option further extends this to a simple 3D p_det(SNR, Mchirp_det, q)
+    table, which can reduce selection-normalization bias when detectability depends strongly on the
+    mass ratio in addition to chirp mass.
     """
     z_max = float(z_max)
     if z_max <= 0.0:
@@ -593,7 +597,7 @@ def compute_selection_alpha_from_injections(
             # For a threshold model we need an explicit threshold.
             # The threshold is a property of the detection pipeline and should not depend on population weights.
             snr_threshold = calibrate_snr_threshold_match_count(snr_net_opt=snr, found_ifar=found_ifar)
-        elif det_model in ("snr_binned", "snr_mchirp_binned"):
+        elif det_model in ("snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"):
             snr_threshold = None
         else:
             raise ValueError("Unknown det_model.")
@@ -604,6 +608,8 @@ def compute_selection_alpha_from_injections(
     pdet_vals: np.ndarray | None = None
     mchirp_edges: np.ndarray | None = None
     pdet_grid: np.ndarray | None = None
+    q_edges: np.ndarray | None = None
+    pdet_grid3: np.ndarray | None = None
     if det_model == "snr_binned":
         nb = int(snr_binned_nbins)
         if nb < 20:
@@ -671,6 +677,68 @@ def compute_selection_alpha_from_injections(
         pdet_edges = snr_edges
         mchirp_edges = mc_edges
         pdet_grid = pdet2
+    elif det_model == "snr_mchirp_q_binned":
+        nb_snr = int(snr_binned_nbins)
+        if nb_snr < 20:
+            raise ValueError("snr_binned_nbins too small (need >= 20).")
+        nb_mc = int(mchirp_binned_nbins)
+        if nb_mc < 4:
+            raise ValueError("mchirp_binned_nbins too small (need >= 4).")
+        nb_q = int(q_binned_nbins)
+        if nb_q < 4:
+            raise ValueError("q_binned_nbins too small (need >= 4).")
+
+        mc_src = ((m1 * m2) ** (3.0 / 5.0)) / np.clip(m1 + m2, 1e-300, np.inf) ** (1.0 / 5.0)
+        mc_det = np.asarray(mc_src * (1.0 + z), dtype=float)
+        if not np.all(np.isfinite(mc_det)) or np.any(mc_det <= 0.0):
+            raise ValueError("Non-finite/non-positive injection mchirp_det for snr_mchirp_q_binned.")
+
+        q_ratio = np.clip(m2 / m1, 1e-12, 1.0)
+        if not np.all(np.isfinite(q_ratio)) or np.any(q_ratio <= 0.0) or np.any(q_ratio > 1.0):
+            raise ValueError("Non-finite/out-of-range injection q for snr_mchirp_q_binned.")
+
+        snr_edges = np.quantile(snr, np.linspace(0.0, 1.0, nb_snr + 1))
+        snr_edges = np.unique(snr_edges)
+        if snr_edges.size < 10:
+            raise ValueError("Too few unique SNR edges for snr_mchirp_q_binned; injection SNR distribution seems degenerate.")
+
+        mc_edges = np.quantile(mc_det, np.linspace(0.0, 1.0, nb_mc + 1))
+        mc_edges = np.unique(mc_edges)
+        if mc_edges.size < 4:
+            raise ValueError("Too few unique mchirp_det edges for snr_mchirp_q_binned; injection mass distribution seems degenerate.")
+
+        q_edges = np.quantile(q_ratio, np.linspace(0.0, 1.0, nb_q + 1))
+        q_edges = np.unique(q_edges)
+        if q_edges.size < 4:
+            raise ValueError("Too few unique q edges for snr_mchirp_q_binned; injection mass-ratio distribution seems degenerate.")
+
+        snr_bin = np.clip(np.digitize(snr, snr_edges) - 1, 0, snr_edges.size - 2)
+        mc_bin = np.clip(np.digitize(mc_det, mc_edges) - 1, 0, mc_edges.size - 2)
+        q_bin = np.clip(np.digitize(q_ratio, q_edges) - 1, 0, q_edges.size - 2)
+
+        n_mc_bins = int(mc_edges.size) - 1
+        n_q_bins = int(q_edges.size) - 1
+        n_snr_bins = int(snr_edges.size) - 1
+        pdet3 = np.zeros((n_mc_bins, n_q_bins, n_snr_bins), dtype=float)
+        for i_mc in range(n_mc_bins):
+            m_i = mc_bin == i_mc
+            if not np.any(m_i):
+                continue
+            for i_q in range(n_q_bins):
+                m_iq = m_i & (q_bin == i_q)
+                if not np.any(m_iq):
+                    continue
+                for i_snr in range(n_snr_bins):
+                    m_ijk = m_iq & (snr_bin == i_snr)
+                    if not np.any(m_ijk):
+                        pdet3[i_mc, i_q, i_snr] = pdet3[i_mc, i_q, i_snr - 1] if i_snr > 0 else 0.0
+                        continue
+                    pdet3[i_mc, i_q, i_snr] = float(np.mean(found_ifar[m_ijk].astype(float)))
+                pdet3[i_mc, i_q, :] = np.maximum.accumulate(np.clip(pdet3[i_mc, i_q, :], 0.0, 1.0))
+
+        pdet_edges = snr_edges
+        mchirp_edges = mc_edges
+        pdet_grid3 = pdet3
 
     # Precompute model distances on the posterior z_grid for each draw, then interpolate to injection z.
     z_grid = np.asarray(post.z_grid, dtype=float)
@@ -683,11 +751,16 @@ def compute_selection_alpha_from_injections(
     alpha_gr = np.empty((n_draws,), dtype=float)
 
     inj_mchirp_det: np.ndarray | None = None
-    if det_model == "snr_mchirp_binned":
+    inj_q: np.ndarray | None = None
+    if det_model in ("snr_mchirp_binned", "snr_mchirp_q_binned"):
         mc_src = ((m1 * m2) ** (3.0 / 5.0)) / np.clip(m1 + m2, 1e-300, np.inf) ** (1.0 / 5.0)
         inj_mchirp_det = np.asarray(mc_src * (1.0 + z), dtype=float)
         if not np.all(np.isfinite(inj_mchirp_det)) or np.any(inj_mchirp_det <= 0.0):
             raise ValueError("Non-finite/non-positive injection mchirp_det after cuts.")
+    if det_model == "snr_mchirp_q_binned":
+        inj_q = np.clip(m2 / m1, 1e-12, 1.0)
+        if not np.all(np.isfinite(inj_q)) or np.any(inj_q <= 0.0) or np.any(inj_q > 1.0):
+            raise ValueError("Non-finite/out-of-range injection q after cuts.")
 
     for j in range(n_draws):
         dL_em = np.interp(z, z_grid, dL_em_grid[j])
@@ -726,6 +799,16 @@ def compute_selection_alpha_from_injections(
             i_mu = np.clip(np.digitize(snr_mu_eff, pdet_edges) - 1, 0, pdet_grid.shape[1] - 1)
             p_gr = pdet_grid[i_mc, i_gr]
             p_mu = pdet_grid[i_mc, i_mu]
+            alpha_gr[j] = float(np.sum(w * p_gr) / wsum)
+            alpha_mu[j] = float(np.sum(w * p_mu) / wsum)
+        elif det_model == "snr_mchirp_q_binned":
+            assert pdet_edges is not None and mchirp_edges is not None and q_edges is not None and pdet_grid3 is not None and inj_mchirp_det is not None and inj_q is not None
+            i_mc = np.clip(np.digitize(inj_mchirp_det, mchirp_edges) - 1, 0, pdet_grid3.shape[0] - 1)
+            i_q = np.clip(np.digitize(inj_q, q_edges) - 1, 0, pdet_grid3.shape[1] - 1)
+            i_gr = np.clip(np.digitize(snr_gr_eff, pdet_edges) - 1, 0, pdet_grid3.shape[2] - 1)
+            i_mu = np.clip(np.digitize(snr_mu_eff, pdet_edges) - 1, 0, pdet_grid3.shape[2] - 1)
+            p_gr = pdet_grid3[i_mc, i_q, i_gr]
+            p_mu = pdet_grid3[i_mc, i_q, i_mu]
             alpha_gr[j] = float(np.sum(w * p_gr) / wsum)
             alpha_mu[j] = float(np.sum(w * p_mu) / wsum)
         else:

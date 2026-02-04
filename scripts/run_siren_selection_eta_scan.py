@@ -109,9 +109,16 @@ def main() -> int:
     ap.add_argument("--selection-ifar-thresh-yr", type=float, default=1.0, help="IFAR threshold (years) for injections (default 1).")
     ap.add_argument("--selection-z-max", type=float, default=None, help="Selection z_max (default: posterior z_grid max).")
     ap.add_argument("--convention", choices=["A", "B"], default="A", help="GW/EM convention for mu draw mapping (default A).")
-    ap.add_argument("--det-model", choices=["threshold", "snr_binned"], default="snr_binned", help="Detection model (default snr_binned).")
+    ap.add_argument(
+        "--det-model",
+        choices=["threshold", "snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"],
+        default="snr_binned",
+        help="Detection model (default snr_binned).",
+    )
     ap.add_argument("--snr-thresh", type=float, default=None, help="Optional fixed SNR threshold (default: calibrate).")
     ap.add_argument("--snr-binned-nbins", type=int, default=200, help="Bins for snr_binned model (default 200).")
+    ap.add_argument("--mchirp-binned-nbins", type=int, default=20, help="Chirp-mass bins for det_model=snr_mchirp_binned (default 20).")
+    ap.add_argument("--q-binned-nbins", type=int, default=10, help="Mass-ratio bins for det_model=snr_mchirp_q_binned (default 10).")
     ap.add_argument("--weight-mode", choices=["none", "inv_sampling_pdf"], default="none", help="Injection weighting mode (default none).")
     ap.add_argument(
         "--mu-det-distance",
@@ -231,6 +238,8 @@ def main() -> int:
         "det_model": str(args.det_model),
         "snr_threshold": float(args.snr_thresh) if args.snr_thresh is not None else None,
         "snr_binned_nbins": int(args.snr_binned_nbins),
+        "mchirp_binned_nbins": int(args.mchirp_binned_nbins),
+        "q_binned_nbins": int(args.q_binned_nbins),
         "weight_mode": str(args.weight_mode),
         "mu_det_distance": str(args.mu_det_distance),
         "pop_z_mode": str(args.pop_z_mode),
@@ -265,6 +274,8 @@ def main() -> int:
             det_model=str(args.det_model),  # type: ignore[arg-type]
             snr_offset=float(e),
             snr_binned_nbins=int(args.snr_binned_nbins),
+            mchirp_binned_nbins=int(args.mchirp_binned_nbins),
+            q_binned_nbins=int(args.q_binned_nbins),
             weight_mode=str(args.weight_mode),  # type: ignore[arg-type]
             mu_det_distance=str(args.mu_det_distance),  # type: ignore[arg-type]
             pop_z_mode=str(args.pop_z_mode),  # type: ignore[arg-type]

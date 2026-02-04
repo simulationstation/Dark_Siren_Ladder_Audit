@@ -1784,6 +1784,7 @@ def main() -> int:
                     det_model=str(args.selection_det_model),  # type: ignore[arg-type]
                     snr_binned_nbins=int(args.selection_snr_binned_nbins),
                     mchirp_binned_nbins=int(args.selection_mchirp_binned_nbins),
+                    q_binned_nbins=int(args.selection_q_binned_nbins),
                     weight_mode=str(args.selection_weight_mode),  # type: ignore[arg-type]
                     pop_z_mode=str(args.selection_pop_z_mode),  # type: ignore[arg-type]
                     pop_z_powerlaw_k=float(args.selection_pop_z_k),
@@ -1811,6 +1812,7 @@ def main() -> int:
                     "det_model": getattr(alpha, "det_model", "unknown"),
                     "snr_binned_nbins": int(args.selection_snr_binned_nbins),
                     "mchirp_binned_nbins": int(args.selection_mchirp_binned_nbins),
+                    "q_binned_nbins": int(args.selection_q_binned_nbins),
                     "weight_mode": getattr(alpha, "weight_mode", "unknown"),
                     "inj_sampling_pdf_dist": str(args.inj_sampling_pdf_dist),
                     "inj_sampling_pdf_mass_frame": str(args.inj_sampling_pdf_mass_frame),
@@ -3047,6 +3049,7 @@ def main() -> int:
                 det_model=str(args.selection_det_model),  # type: ignore[arg-type]
                 snr_binned_nbins=int(args.selection_snr_binned_nbins),
                 mchirp_binned_nbins=int(args.selection_mchirp_binned_nbins),
+                q_binned_nbins=int(args.selection_q_binned_nbins),
                 weight_mode=str(args.selection_weight_mode),  # type: ignore[arg-type]
                 pop_z_mode=str(args.selection_pop_z_mode),  # type: ignore[arg-type]
                 pop_z_powerlaw_k=float(args.selection_pop_z_k),
@@ -3074,6 +3077,7 @@ def main() -> int:
                 "det_model": getattr(alpha, "det_model", "unknown"),
                 "snr_binned_nbins": int(args.selection_snr_binned_nbins),
                 "mchirp_binned_nbins": int(args.selection_mchirp_binned_nbins),
+                "q_binned_nbins": int(args.selection_q_binned_nbins),
                 "weight_mode": getattr(alpha, "weight_mode", "unknown"),
                 "inj_sampling_pdf_dist": str(args.inj_sampling_pdf_dist),
                 "inj_sampling_pdf_mass_frame": str(args.inj_sampling_pdf_mass_frame),
