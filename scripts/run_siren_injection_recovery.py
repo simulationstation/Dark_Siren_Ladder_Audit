@@ -37,6 +37,12 @@ def main() -> int:
     ap.add_argument("--h0-true", type=float, required=True, help="Truth H0 used to generate synthetic detected events.")
     ap.add_argument("--n-events", type=int, default=20, help="Number of synthetic detected events to generate (default 20).")
     ap.add_argument("--seed", type=int, default=0, help="Seed for synthetic event selection (default 0).")
+    ap.add_argument(
+        "--n-proc",
+        type=int,
+        default=0,
+        help="Worker processes for hierarchical inference across events (default 0 = all cores).",
+    )
 
     ap.add_argument("--h0-min", type=float, default=50.0, help="Min H0 in inference grid (default 50).")
     ap.add_argument("--h0-max", type=float, default=90.0, help="Max H0 in inference grid (default 90).")
@@ -267,6 +273,7 @@ def main() -> int:
         n_events=int(n_events),
         h0_grid=H0_grid,
         seed=int(args.seed),
+        n_processes=int(args.n_proc),
         out_dir=out_dir,
     )
 
