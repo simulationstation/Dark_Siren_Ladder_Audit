@@ -181,8 +181,8 @@ def main() -> int:
     ap.add_argument(
         "--z-max-mode",
         choices=["fixed", "auto"],
-        default="auto",
-        help="z_max policy: fixed uses --z-max; auto expands z_max so the H0 grid doesn't induce artificial support truncation (default auto).",
+        default="fixed",
+        help="z_max policy: fixed uses --z-max; auto expands z_max so the H0 grid doesn't induce support truncation from the z_max cutoff (default fixed).",
     )
     ap.add_argument("--z-max-auto-cap", type=float, default=5.0, help="Max z used for the auto z_max inversion cache (default 5).")
     ap.add_argument("--z-max-auto-margin", type=float, default=0.10, help="Additive safety margin on inferred z_max (default 0.10).")

@@ -114,8 +114,8 @@ def main() -> int:
     ap.add_argument(
         "--z-max-mode",
         choices=["fixed", "auto"],
-        default="auto",
-        help="z_max policy: fixed uses summary/--z-max; auto expands z_max to avoid QC-induced event skipping (default auto).",
+        default="fixed",
+        help="z_max policy: fixed uses summary/--z-max; auto expands z_max to avoid support truncation from the z_max cutoff (default fixed).",
     )
     ap.add_argument(
         "--z-max-auto-dl-quantile",

@@ -47,8 +47,8 @@ def main() -> int:
     ap.add_argument(
         "--z-max-mode",
         choices=["fixed", "auto"],
-        default="auto",
-        help="z_max policy: fixed uses --z-max; auto expands z_max so the H0 grid doesn't induce artificial support truncation (default auto).",
+        default="fixed",
+        help="z_max policy: fixed uses --z-max; auto expands z_max so the H0 grid doesn't induce support truncation from the z_max cutoff (default fixed).",
     )
     ap.add_argument("--z-max-auto-cap", type=float, default=5.0, help="Max z used for the auto z_max inversion cache (default 5).")
     ap.add_argument("--z-max-auto-margin", type=float, default=0.10, help="Additive safety margin on inferred z_max (default 0.10).")
@@ -180,7 +180,7 @@ def main() -> int:
     z_max = float(args.z_max)
     if str(args.z_max_mode) == "auto":
         h0_eval = float(max(float(args.h0_min), float(args.h0_max)))
-        z_req = _infer_z_max_for_h0_grid_closed_loop(
+        z_req = infer_z_max_for_h0_grid_closed_loop(
             omega_m0=float(args.omega_m0),
             omega_k0=float(args.omega_k0),
             z_gen_max=float(z_max),
