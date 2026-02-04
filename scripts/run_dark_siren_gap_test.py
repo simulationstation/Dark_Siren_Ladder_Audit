@@ -1121,12 +1121,13 @@ def main() -> int:
     ap.add_argument("--selection-z-max", type=float, default=None, help="Max injection redshift used in alpha(model) (default: min(gal-z-max, post.z_grid.max)).")
     ap.add_argument(
         "--selection-det-model",
-        choices=["threshold", "snr_binned"],
+        choices=["threshold", "snr_binned", "snr_mchirp_binned"],
         default="snr_binned",
         help=(
             "Detection model used in alpha(model).\n"
             "  - threshold: hard SNR threshold (if --selection-snr-thresh omitted, calibrates to match found_ifar)\n"
-            "  - snr_binned: empirical monotone p_det(SNR) curve from injections (recommended)\n"
+            "  - snr_binned: empirical monotone p_det(SNR) curve from injections\n"
+            "  - snr_mchirp_binned: simple 2D p_det(SNR, Mchirp_det) table from injections (recommended)\n"
         ),
     )
     ap.add_argument(
@@ -1139,7 +1140,13 @@ def main() -> int:
         "--selection-snr-binned-nbins",
         type=int,
         default=200,
-        help="Number of SNR quantile bins for --selection-det-model=snr_binned (default 200).",
+        help="Number of SNR quantile bins for --selection-det-model in {snr_binned,snr_mchirp_binned} (default 200).",
+    )
+    ap.add_argument(
+        "--selection-mchirp-binned-nbins",
+        type=int,
+        default=20,
+        help="Number of chirp-mass bins for --selection-det-model=snr_mchirp_binned (default 20).",
     )
     ap.add_argument(
         "--selection-weight-mode",
@@ -1186,6 +1193,30 @@ def main() -> int:
     ap.add_argument("--selection-pop-m-peak", type=float, default=35.0, help="Gaussian peak location in m1 (Msun) for --selection-pop-mass-mode=powerlaw_peak_q_smooth.")
     ap.add_argument("--selection-pop-m-peak-sigma", type=float, default=5.0, help="Gaussian peak sigma in m1 (Msun) for --selection-pop-mass-mode=powerlaw_peak_q_smooth.")
     ap.add_argument("--selection-pop-m-peak-frac", type=float, default=0.1, help="Gaussian peak mixture fraction for --selection-pop-mass-mode=powerlaw_peak_q_smooth.")
+    ap.add_argument(
+        "--inj-mass-pdf-coords",
+        choices=["m1m2", "m1q"],
+        default="m1m2",
+        help="Mass-coordinate convention for injection sampling_pdf (default m1m2).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-dist",
+        choices=["z", "dL", "log_dL"],
+        default="z",
+        help="Distance/redshift coordinate used by injection sampling_pdf: 'z' means sampling_pdf is a density in z; 'dL'/'log_dL' mean density in (luminosity distance) and will be converted using dL/dz (default z).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-frame",
+        choices=["source", "detector"],
+        default="source",
+        help="Mass-frame used by injection sampling_pdf: 'source' means source-frame component masses; 'detector' means detector-frame masses and will be converted using (1+z) Jacobians (default source).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-scale",
+        choices=["linear", "log"],
+        default="linear",
+        help="Mass coordinate scale used by injection sampling_pdf. 'linear' means density in m; 'log' means density in log(m) and will be converted using Jacobians (default linear).",
+    )
 
     # Catalog incompleteness handling (optional, weight-based).
     ap.add_argument(
@@ -1635,6 +1666,7 @@ def main() -> int:
                 det_model=str(args.selection_det_model),  # type: ignore[arg-type]
                 snr_threshold=float(args.selection_snr_thresh) if args.selection_snr_thresh is not None else None,
                 snr_binned_nbins=int(args.selection_snr_binned_nbins),
+                mchirp_binned_nbins=int(args.selection_mchirp_binned_nbins),
                 weight_mode=str(args.selection_weight_mode),  # type: ignore[arg-type]
                 pop_z_mode=str(args.selection_pop_z_mode),  # type: ignore[arg-type]
                 pop_z_powerlaw_k=float(args.selection_pop_z_k),
@@ -1647,6 +1679,10 @@ def main() -> int:
                 pop_m_peak=float(args.selection_pop_m_peak),
                 pop_m_peak_sigma=float(args.selection_pop_m_peak_sigma),
                 pop_m_peak_frac=float(args.selection_pop_m_peak_frac),
+                inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+                inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+                inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+                inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
                 prior=str(args.gr_h0_prior),  # type: ignore[arg-type]
             )
 
@@ -1693,6 +1729,7 @@ def main() -> int:
                     snr_threshold=float(args.selection_snr_thresh) if args.selection_snr_thresh is not None else None,
                     det_model=str(args.selection_det_model),  # type: ignore[arg-type]
                     snr_binned_nbins=int(args.selection_snr_binned_nbins),
+                    mchirp_binned_nbins=int(args.selection_mchirp_binned_nbins),
                     weight_mode=str(args.selection_weight_mode),  # type: ignore[arg-type]
                     pop_z_mode=str(args.selection_pop_z_mode),  # type: ignore[arg-type]
                     pop_z_powerlaw_k=float(args.selection_pop_z_k),
@@ -1705,6 +1742,10 @@ def main() -> int:
                     pop_m_peak=float(args.selection_pop_m_peak),
                     pop_m_peak_sigma=float(args.selection_pop_m_peak_sigma),
                     pop_m_peak_frac=float(args.selection_pop_m_peak_frac),
+                    inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+                    inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+                    inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+                    inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
                 )
                 log_alpha_mu = np.log(np.clip(alpha.alpha_mu, 1e-300, np.inf))
                 log_alpha_gr = np.log(np.clip(alpha.alpha_gr, 1e-300, np.inf))
@@ -1714,7 +1755,13 @@ def main() -> int:
                     "snr_threshold": alpha.snr_threshold,
                     "n_injections_used": alpha.n_injections_used,
                     "det_model": getattr(alpha, "det_model", "unknown"),
+                    "snr_binned_nbins": int(args.selection_snr_binned_nbins),
+                    "mchirp_binned_nbins": int(args.selection_mchirp_binned_nbins),
                     "weight_mode": getattr(alpha, "weight_mode", "unknown"),
+                    "inj_sampling_pdf_dist": str(args.inj_sampling_pdf_dist),
+                    "inj_sampling_pdf_mass_frame": str(args.inj_sampling_pdf_mass_frame),
+                    "inj_sampling_pdf_mass_scale": str(args.inj_sampling_pdf_mass_scale),
+                    "inj_mass_pdf_coords": str(args.inj_mass_pdf_coords),
                     "pop_z_mode": str(args.selection_pop_z_mode),
                     "pop_z_k": float(args.selection_pop_z_k),
                     "pop_mass_mode": str(args.selection_pop_mass_mode),
@@ -2690,6 +2737,7 @@ def main() -> int:
             det_model=str(args.selection_det_model),
             snr_threshold=float(args.selection_snr_thresh) if args.selection_snr_thresh is not None else None,
             snr_binned_nbins=int(args.selection_snr_binned_nbins),
+            mchirp_binned_nbins=int(args.selection_mchirp_binned_nbins),
             weight_mode=str(args.selection_weight_mode),
             pop_z_mode=str(args.selection_pop_z_mode),
             pop_z_powerlaw_k=float(args.selection_pop_z_k),
@@ -2698,6 +2746,14 @@ def main() -> int:
             pop_m_min=float(args.selection_pop_m_min),
             pop_m_max=float(args.selection_pop_m_max),
             pop_q_beta=float(args.selection_pop_q_beta),
+            pop_m_taper_delta=float(args.selection_pop_m_taper_delta),
+            pop_m_peak=float(args.selection_pop_m_peak),
+            pop_m_peak_sigma=float(args.selection_pop_m_peak_sigma),
+            pop_m_peak_frac=float(args.selection_pop_m_peak_frac),
+            inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),
+            inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),
+            inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),
+            inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),
             prior=str(args.gr_h0_prior),
             gw_distance_prior=_gw_prior_for_args(args, gw_path0),
         )
@@ -2752,6 +2808,7 @@ def main() -> int:
                 snr_threshold=float(args.selection_snr_thresh) if args.selection_snr_thresh is not None else None,
                 det_model=str(args.selection_det_model),  # type: ignore[arg-type]
                 snr_binned_nbins=int(args.selection_snr_binned_nbins),
+                mchirp_binned_nbins=int(args.selection_mchirp_binned_nbins),
                 weight_mode=str(args.selection_weight_mode),  # type: ignore[arg-type]
                 pop_z_mode=str(args.selection_pop_z_mode),  # type: ignore[arg-type]
                 pop_z_powerlaw_k=float(args.selection_pop_z_k),
@@ -2764,6 +2821,10 @@ def main() -> int:
                 pop_m_peak=float(args.selection_pop_m_peak),
                 pop_m_peak_sigma=float(args.selection_pop_m_peak_sigma),
                 pop_m_peak_frac=float(args.selection_pop_m_peak_frac),
+                inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+                inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+                inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+                inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
             )
             log_alpha_mu = np.log(np.clip(alpha.alpha_mu, 1e-300, np.inf))
             log_alpha_gr = np.log(np.clip(alpha.alpha_gr, 1e-300, np.inf))
@@ -2773,7 +2834,13 @@ def main() -> int:
                 "snr_threshold": alpha.snr_threshold,
                 "n_injections_used": alpha.n_injections_used,
                 "det_model": getattr(alpha, "det_model", "unknown"),
+                "snr_binned_nbins": int(args.selection_snr_binned_nbins),
+                "mchirp_binned_nbins": int(args.selection_mchirp_binned_nbins),
                 "weight_mode": getattr(alpha, "weight_mode", "unknown"),
+                "inj_sampling_pdf_dist": str(args.inj_sampling_pdf_dist),
+                "inj_sampling_pdf_mass_frame": str(args.inj_sampling_pdf_mass_frame),
+                "inj_sampling_pdf_mass_scale": str(args.inj_sampling_pdf_mass_scale),
+                "inj_mass_pdf_coords": str(args.inj_mass_pdf_coords),
                 "pop_z_mode": str(args.selection_pop_z_mode),
                 "pop_z_k": float(args.selection_pop_z_k),
                 "pop_mass_mode": str(args.selection_pop_mass_mode),
