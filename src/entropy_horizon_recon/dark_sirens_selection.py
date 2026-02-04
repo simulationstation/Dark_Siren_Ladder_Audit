@@ -327,6 +327,9 @@ def compute_selection_alpha_from_injections(
     pop_m_peak_sigma: float = 5.0,
     pop_m_peak_frac: float = 0.1,
     inj_mass_pdf_coords: Literal["m1m2", "m1q"] = "m1m2",
+    inj_sampling_pdf_dist: Literal["z", "dL", "log_dL"] = "z",
+    inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source",
+    inj_sampling_pdf_mass_scale: Literal["linear", "log"] = "linear",
 ) -> SelectionAlphaResult:
     """Compute alpha(model) via distance-rescaled injection SNRs.
 
@@ -400,6 +403,76 @@ def compute_selection_alpha_from_injections(
         if not np.all(np.isfinite(pdf)) or np.any(pdf <= 0.0):
             raise ValueError("sampling_pdf contains non-finite or non-positive values; cannot use inv_sampling_pdf weighting.")
         w = w / pdf
+
+        # Interpret `sampling_pdf` in a consistent (z, m_source) measure.
+        inj_sampling_pdf_dist = str(inj_sampling_pdf_dist)
+        if inj_sampling_pdf_dist == "z":
+            pass
+        elif inj_sampling_pdf_dist == "dL":
+            # Convert from a density in dL to a density in z.
+            H0_ref = 67.7  # km/s/Mpc (cancels in ratios)
+            om0 = 0.31
+            c = 299792.458
+            z_grid = np.linspace(0.0, float(np.max(z)), 5001)
+            Ez = np.sqrt(om0 * (1.0 + z_grid) ** 3 + (1.0 - om0))
+            invEz = 1.0 / np.clip(Ez, 1e-30, np.inf)
+            dc = (c / H0_ref) * np.cumsum(np.concatenate([[0.0], 0.5 * (invEz[1:] + invEz[:-1]) * np.diff(z_grid)]))
+            Dc = np.interp(z, z_grid, dc)
+            Ez_z = np.interp(z, z_grid, Ez)
+            dDc_dz = c / (H0_ref * np.clip(Ez_z, 1e-30, np.inf))
+            ddL_dz = Dc + (1.0 + z) * dDc_dz
+            if not np.all(np.isfinite(ddL_dz)) or np.any(ddL_dz <= 0.0):
+                raise ValueError("Non-finite/non-positive dL/dz encountered while converting sampling_pdf from dL to z.")
+            w = w / ddL_dz
+        elif inj_sampling_pdf_dist == "log_dL":
+            # Convert from a density in log dL to a density in z.
+            H0_ref = 67.7  # km/s/Mpc (cancels in ratio dL/(dL/dz))
+            om0 = 0.31
+            c = 299792.458
+            z_grid = np.linspace(0.0, float(np.max(z)), 5001)
+            Ez = np.sqrt(om0 * (1.0 + z_grid) ** 3 + (1.0 - om0))
+            invEz = 1.0 / np.clip(Ez, 1e-30, np.inf)
+            dc = (c / H0_ref) * np.cumsum(np.concatenate([[0.0], 0.5 * (invEz[1:] + invEz[:-1]) * np.diff(z_grid)]))
+            Dc = np.interp(z, z_grid, dc)
+            Ez_z = np.interp(z, z_grid, Ez)
+            dDc_dz = c / (H0_ref * np.clip(Ez_z, 1e-30, np.inf))
+            ddL_dz = Dc + (1.0 + z) * dDc_dz
+            if not np.all(np.isfinite(ddL_dz)) or np.any(ddL_dz <= 0.0):
+                raise ValueError("Non-finite/non-positive dL/dz encountered while converting sampling_pdf from log_dL to z.")
+            w = w * (np.clip(dL_fid, 1e-12, np.inf) / ddL_dz)
+        else:
+            raise ValueError("Unknown inj_sampling_pdf_dist (expected 'z', 'dL', or 'log_dL').")
+
+        inj_sampling_pdf_mass_frame = str(inj_sampling_pdf_mass_frame)
+        inj_sampling_pdf_mass_scale = str(inj_sampling_pdf_mass_scale)
+        if inj_sampling_pdf_mass_frame == "source":
+            pass
+        elif inj_sampling_pdf_mass_frame == "detector":
+            if inj_sampling_pdf_mass_scale == "linear":
+                if inj_mass_pdf_coords == "m1m2":
+                    w = w / np.clip(1.0 + z, 1e-12, np.inf) ** 2
+                elif inj_mass_pdf_coords == "m1q":
+                    w = w / np.clip(1.0 + z, 1e-12, np.inf)
+                else:
+                    raise ValueError("Unknown inj_mass_pdf_coords (expected 'm1m2' or 'm1q').")
+            elif inj_sampling_pdf_mass_scale == "log":
+                pass
+            else:
+                raise ValueError("Unknown inj_sampling_pdf_mass_scale (expected 'linear' or 'log').")
+        else:
+            raise ValueError("Unknown inj_sampling_pdf_mass_frame (expected 'source' or 'detector').")
+
+        if inj_sampling_pdf_mass_scale == "linear":
+            pass
+        elif inj_sampling_pdf_mass_scale == "log":
+            if inj_mass_pdf_coords == "m1m2":
+                w = w * np.clip(m1 * m2, 1e-300, np.inf)
+            elif inj_mass_pdf_coords == "m1q":
+                w = w * np.clip(m1, 1e-300, np.inf)
+            else:
+                raise ValueError("Unknown inj_mass_pdf_coords (expected 'm1m2' or 'm1q').")
+        else:
+            raise ValueError("Unknown inj_sampling_pdf_mass_scale (expected 'linear' or 'log').")
     else:
         raise ValueError("Unknown weight_mode.")
 

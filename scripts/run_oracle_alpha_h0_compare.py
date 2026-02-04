@@ -100,6 +100,31 @@ def main() -> int:
     ap.add_argument("--pop-m-peak-sigma", type=float, default=5.0, help="Gaussian peak sigma in m1 (Msun) for pop_mass_mode=powerlaw_peak_q_smooth.")
     ap.add_argument("--pop-m-peak-frac", type=float, default=0.1, help="Gaussian peak mixture fraction for pop_mass_mode=powerlaw_peak_q_smooth.")
 
+    ap.add_argument(
+        "--inj-mass-pdf-coords",
+        choices=["m1m2", "m1q"],
+        default="m1m2",
+        help="Mass-coordinate convention for injection sampling_pdf (default m1m2).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-dist",
+        choices=["z", "dL", "log_dL"],
+        default="z",
+        help="Distance/redshift coordinate used by injection sampling_pdf (default z).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-frame",
+        choices=["source", "detector"],
+        default="source",
+        help="Mass-frame used by injection sampling_pdf (default source).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-scale",
+        choices=["linear", "log"],
+        default="linear",
+        help="Mass coordinate scale used by injection sampling_pdf (default linear).",
+    )
+
     ap.add_argument("--icarogw-python", default="oracles/icarogw/.venv/bin/python", help="Path to ICAROGW venv python.")
     ap.add_argument("--no-wcosmo", action="store_true", help="Skip the wcosmo oracle.")
     ap.add_argument("--no-icarogw", action="store_true", help="Skip the ICAROGW oracle.")
@@ -142,6 +167,10 @@ def main() -> int:
         pop_m_peak=float(args.pop_m_peak),
         pop_m_peak_sigma=float(args.pop_m_peak_sigma),
         pop_m_peak_frac=float(args.pop_m_peak_frac),
+        inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+        inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
     )
     ours_path = json_dir / "alpha_ours.json"
     _write_curve(
@@ -162,6 +191,12 @@ def main() -> int:
     out_summary: dict[str, Any] = {
         "out_dir": str(out_dir.resolve()),
         "alpha_ours": str(ours_path.resolve()),
+        "inj_sampling_pdf": {
+            "inj_mass_pdf_coords": str(args.inj_mass_pdf_coords),
+            "inj_sampling_pdf_dist": str(args.inj_sampling_pdf_dist),
+            "inj_sampling_pdf_mass_frame": str(args.inj_sampling_pdf_mass_frame),
+            "inj_sampling_pdf_mass_scale": str(args.inj_sampling_pdf_mass_scale),
+        },
         "comparisons": {},
     }
 
@@ -198,6 +233,10 @@ def main() -> int:
                 pop_m_peak=float(args.pop_m_peak),
                 pop_m_peak_sigma=float(args.pop_m_peak_sigma),
                 pop_m_peak_frac=float(args.pop_m_peak_frac),
+                inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+                inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+                inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+                inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
             )
             wcosmo_path = json_dir / "alpha_wcosmo.json"
             _write_curve(
@@ -278,6 +317,10 @@ def main() -> int:
                     pop_m_peak=float(args.pop_m_peak),
                     pop_m_peak_sigma=float(args.pop_m_peak_sigma),
                     pop_m_peak_frac=float(args.pop_m_peak_frac),
+                    inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+                    inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+                    inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+                    inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
                 )
                 icarogw_path = json_dir / "alpha_icarogw.json"
                 _write_curve(

@@ -90,7 +90,15 @@ class InjectionRecoveryConfig:
     # Some O3 sensitivity injection releases define `sampling_pdf` in terms of luminosity distance
     # rather than redshift. In that case, converting to the population's z-measure introduces a
     # Jacobian factor dL/dz.
-    inj_sampling_pdf_dist: Literal["z", "dL"] = "z"
+    inj_sampling_pdf_dist: Literal["z", "dL", "log_dL"] = "z"
+
+    # Coordinate convention for the injection `sampling_pdf` mass variables (linear vs log).
+    #
+    # Some injection releases define the mass part of `sampling_pdf` in log-mass coordinates.
+    # If so, converting to the linear-mass measure introduces Jacobian factors:
+    #   (m1m2): dlog m1 dlog m2 = (1/(m1 m2)) dm1 dm2
+    #   (m1q):  dlog m1 dq      = (1/m1) dm1 dq
+    inj_sampling_pdf_mass_scale: Literal["linear", "log"] = "linear"
 
     # Mass-frame convention for the injection `sampling_pdf`.
     #
@@ -231,6 +239,7 @@ def compute_selection_alpha_h0_grid_for_cfg(
         inj_mass_pdf_coords=str(cfg.inj_mass_pdf_coords),  # type: ignore[arg-type]
         inj_sampling_pdf_dist=str(cfg.inj_sampling_pdf_dist),  # type: ignore[arg-type]
         inj_sampling_pdf_mass_frame=str(cfg.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_scale=str(cfg.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
     )
     return np.asarray(alpha, dtype=float), dict(meta)
 
@@ -438,18 +447,57 @@ def generate_synthetic_detected_events_from_injections(
             if not np.all(np.isfinite(ddL_dz)) or np.any(ddL_dz <= 0.0):
                 raise ValueError("Non-finite/non-positive dL/dz encountered while converting sampling_pdf from dL to z.")
             w = w / ddL_dz
+        elif str(cfg.inj_sampling_pdf_dist) == "log_dL":
+            # Convert from a density in log dL to a density in z:
+            #   p(z) = p(log dL) * dlog(dL)/dz = p(log dL) * (1/dL) * (dL/dz)
+            H0_ref = 67.7  # km/s/Mpc (cancels in ratio dL/(dL/dz))
+            om0 = 0.31
+            c = 299792.458
+            z_grid = np.linspace(0.0, float(np.max(z)), 5001)
+            Ez = np.sqrt(om0 * (1.0 + z_grid) ** 3 + (1.0 - om0))
+            invEz = 1.0 / np.clip(Ez, 1e-30, np.inf)
+            dc = (c / H0_ref) * np.cumsum(np.concatenate([[0.0], 0.5 * (invEz[1:] + invEz[:-1]) * np.diff(z_grid)]))
+            Dc = np.interp(z, z_grid, dc)
+            Ez_z = np.interp(z, z_grid, Ez)
+            dDc_dz = c / (H0_ref * np.clip(Ez_z, 1e-30, np.inf))
+            ddL_dz = Dc + (1.0 + z) * dDc_dz
+            if not np.all(np.isfinite(ddL_dz)) or np.any(ddL_dz <= 0.0):
+                raise ValueError("Non-finite/non-positive dL/dz encountered while converting sampling_pdf from log_dL to z.")
+            dL = np.clip(dL_fid, 1e-12, np.inf)
+            w = w * (dL / ddL_dz)
         elif str(cfg.inj_sampling_pdf_dist) != "z":
-            raise ValueError("Unknown inj_sampling_pdf_dist (expected 'z' or 'dL').")
+            raise ValueError("Unknown inj_sampling_pdf_dist (expected 'z', 'dL', or 'log_dL').")
 
+        # Mass-frame conversion depends on whether the sampling pdf is in linear or log-mass coordinates:
+        #   - linear masses: dm_det = (1+z) dm_src => Jacobian factors in the density
+        #   - log masses: dlog m_det = dlog m_src (translation) => no Jacobian
         if str(cfg.inj_sampling_pdf_mass_frame) == "detector":
-            if str(cfg.inj_mass_pdf_coords) == "m1m2":
-                w = w / np.clip(1.0 + z, 1e-12, np.inf) ** 2
-            elif str(cfg.inj_mass_pdf_coords) == "m1q":
-                w = w / np.clip(1.0 + z, 1e-12, np.inf)
+            if str(cfg.inj_sampling_pdf_mass_scale) == "linear":
+                if str(cfg.inj_mass_pdf_coords) == "m1m2":
+                    w = w / np.clip(1.0 + z, 1e-12, np.inf) ** 2
+                elif str(cfg.inj_mass_pdf_coords) == "m1q":
+                    w = w / np.clip(1.0 + z, 1e-12, np.inf)
+                else:
+                    raise ValueError("Unknown inj_mass_pdf_coords (expected 'm1m2' or 'm1q').")
+            elif str(cfg.inj_sampling_pdf_mass_scale) == "log":
+                pass
             else:
-                raise ValueError("Unknown inj_mass_pdf_coords (expected 'm1m2' or 'm1q').")
+                raise ValueError("Unknown inj_sampling_pdf_mass_scale (expected 'linear' or 'log').")
         elif str(cfg.inj_sampling_pdf_mass_frame) != "source":
             raise ValueError("Unknown inj_sampling_pdf_mass_frame (expected 'source' or 'detector').")
+
+        # Convert from log-mass coordinate density to linear-mass density (source frame).
+        if str(cfg.inj_sampling_pdf_mass_scale) == "linear":
+            pass
+        elif str(cfg.inj_sampling_pdf_mass_scale) == "log":
+            if str(cfg.inj_mass_pdf_coords) == "m1m2":
+                w = w * np.clip(m1 * m2, 1e-300, np.inf)
+            elif str(cfg.inj_mass_pdf_coords) == "m1q":
+                w = w * np.clip(m1, 1e-300, np.inf)
+            else:
+                raise ValueError("Unknown inj_mass_pdf_coords (expected 'm1m2' or 'm1q').")
+        else:
+            raise ValueError("Unknown inj_sampling_pdf_mass_scale (expected 'linear' or 'log').")
 
     if cfg.pop_mass_mode != "none" and cfg.weight_mode == "inv_sampling_pdf":
         if cfg.inj_mass_pdf_coords == "m1m2":
@@ -854,6 +902,7 @@ def run_injection_recovery_gr_h0(
             inj_mass_pdf_coords=str(cfg.inj_mass_pdf_coords),  # type: ignore[arg-type]
             inj_sampling_pdf_dist=str(cfg.inj_sampling_pdf_dist),  # type: ignore[arg-type]
             inj_sampling_pdf_mass_frame=str(cfg.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+            inj_sampling_pdf_mass_scale=str(cfg.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
         )
         det_model_obj = _calibrate_detection_model_from_snr_and_found(
             snr_net_opt=_snr,

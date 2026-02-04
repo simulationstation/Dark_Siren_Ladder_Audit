@@ -117,6 +117,9 @@ def main() -> int:
     pop_z_k = float(pop.get("pop_z_k", sel_meta.get("pop_z_k", 0.0)))
     pop_mass_mode = str(pop.get("pop_mass_mode", sel_meta.get("pop_mass_mode", "none")))
     inj_mass_pdf_coords = str(gate2.get("inj_mass_pdf_coords", sel_meta.get("inj_mass_pdf_coords", "m1m2")))
+    inj_sampling_pdf_dist = str(gate2.get("inj_sampling_pdf_dist", sel_meta.get("inj_sampling_pdf_dist", "z")))
+    inj_sampling_pdf_mass_frame = str(gate2.get("inj_sampling_pdf_mass_frame", sel_meta.get("inj_sampling_pdf_mass_frame", "source")))
+    inj_sampling_pdf_mass_scale = str(gate2.get("inj_sampling_pdf_mass_scale", sel_meta.get("inj_sampling_pdf_mass_scale", "linear")))
 
     pop_m1_alpha = float(pop.get("pop_m1_alpha", sel_meta.get("pop_m1_alpha", 2.3)))
     pop_m_min = float(pop.get("pop_m_min", sel_meta.get("pop_m_min", 5.0)))
@@ -169,6 +172,9 @@ def main() -> int:
         pop_m_peak_sigma=pop_m_peak_sigma,
         pop_m_peak_frac=pop_m_peak_frac,
         inj_mass_pdf_coords=inj_mass_pdf_coords,  # type: ignore[arg-type]
+        inj_sampling_pdf_dist=inj_sampling_pdf_dist,  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_frame=inj_sampling_pdf_mass_frame,  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_scale=inj_sampling_pdf_mass_scale,  # type: ignore[arg-type]
         pdet_pseudocount=float(args.pdet_pseudocount),
         n_pdet_draws=int(args.n_pdet_draws),
         pdet_draw_seed=int(args.pdet_draw_seed),
@@ -221,6 +227,10 @@ def main() -> int:
         "selection_ifar_thresh_yr": float(ifar_thresh),
         "selection_include_h0_volume_scaling": bool(selection_include_h0_volume_scaling),
         "n_events": int(n_events),
+        "inj_mass_pdf_coords": str(inj_mass_pdf_coords),
+        "inj_sampling_pdf_dist": str(inj_sampling_pdf_dist),
+        "inj_sampling_pdf_mass_frame": str(inj_sampling_pdf_mass_frame),
+        "inj_sampling_pdf_mass_scale": str(inj_sampling_pdf_mass_scale),
         "H0_grid": [float(x) for x in H0_grid.tolist()],
         "posterior_nominal_alpha": [float(x) for x in p_nom.tolist()],
         "posterior_sel_marginalized": [float(x) for x in p_mix.tolist()],
