@@ -55,9 +55,10 @@ class InjectionRecoveryConfig:
     z_max: float = 0.62
 
     # Detectability proxy for generating detections (must match inference alpha proxy choice).
-    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned"] = "threshold"
+    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"] = "threshold"
     snr_binned_nbins: int = 200
     mchirp_binned_nbins: int = 20
+    q_binned_nbins: int = 10
     selection_ifar_thresh_yr: float = 1.0
 
     # Population model used both for sampling events and for inference weighting.
@@ -224,6 +225,7 @@ def compute_selection_alpha_h0_grid_for_cfg(
         snr_threshold=None,
         snr_binned_nbins=int(cfg.snr_binned_nbins),
         mchirp_binned_nbins=int(cfg.mchirp_binned_nbins),
+        q_binned_nbins=int(cfg.q_binned_nbins),
         weight_mode=str(cfg.weight_mode),  # type: ignore[arg-type]
         pop_z_mode=str(cfg.pop_z_mode),  # type: ignore[arg-type]
         pop_z_powerlaw_k=float(cfg.pop_z_k),
@@ -593,6 +595,7 @@ def generate_synthetic_detected_events_from_injections(
 
     mc_src = ((m1 * m2) ** (3.0 / 5.0)) / np.clip(m1 + m2, 1e-300, np.inf) ** (1.0 / 5.0)
     mc_det = mc_src * (1.0 + z)
+    q_ratio = np.clip(m2 / m1, 1e-12, 1.0)
     det = _calibrate_detection_model_from_snr_and_found(
         snr_net_opt=snr_fid,
         found_ifar=found,
@@ -601,9 +604,11 @@ def generate_synthetic_detected_events_from_injections(
         snr_binned_nbins=int(cfg.snr_binned_nbins),
         mchirp_det=mc_det,
         mchirp_binned_nbins=int(cfg.mchirp_binned_nbins),
+        q=q_ratio,
+        q_binned_nbins=int(cfg.q_binned_nbins),
         weights=w,
     )
-    pdet = det.pdet(snr_true, mchirp_det=mc_det)
+    pdet = det.pdet(snr_true, mchirp_det=mc_det, q=q_ratio)
 
     w_det = np.clip(w * np.clip(pdet, 0.0, 1.0), 0.0, np.inf)
     good_det = np.isfinite(w_det) & (w_det > 0.0)
@@ -884,7 +889,7 @@ def run_injection_recovery_gr_h0(
     # but only if the event term explicitly includes p_det.
     det_model_obj = None
     if bool(cfg.include_pdet_in_event_term):
-        _z, _dL_fid, _snr, _found, _mc_det, _w = _injection_weights(
+        _z, _dL_fid, _snr, _found, _mc_det, _q, _w = _injection_weights(
             injections,  # type: ignore[arg-type]
             weight_mode=str(cfg.weight_mode),  # type: ignore[arg-type]
             pop_z_mode=str(cfg.pop_z_mode),  # type: ignore[arg-type]
@@ -912,6 +917,8 @@ def run_injection_recovery_gr_h0(
             snr_binned_nbins=int(cfg.snr_binned_nbins),
             mchirp_det=_mc_det,
             mchirp_binned_nbins=int(cfg.mchirp_binned_nbins),
+            q=_q,
+            q_binned_nbins=int(cfg.q_binned_nbins),
             weights=_w,
         )
 
@@ -934,6 +941,7 @@ def run_injection_recovery_gr_h0(
         snr_threshold=None,
         snr_binned_nbins=int(cfg.snr_binned_nbins),
         mchirp_binned_nbins=int(cfg.mchirp_binned_nbins),
+        q_binned_nbins=int(cfg.q_binned_nbins),
         weight_mode=str(cfg.weight_mode),  # type: ignore[arg-type]
         pop_z_mode=str(cfg.pop_z_mode),  # type: ignore[arg-type]
         pop_z_powerlaw_k=float(cfg.pop_z_k),

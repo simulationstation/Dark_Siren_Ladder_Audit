@@ -261,3 +261,41 @@ Toy SBC aggregates:
 Interpretation:
 - The toy suites are **much closer to calibrated** than the injection‑file suites under the same broad prior stress test (which produce \(u\) means \(\sim 0.33\) under popZ+mass).
 - This strongly points to the remaining “Gate‑2 SBC feels broken” behavior being dominated by the **injection-weighting / selection-proxy layer** (i.e. how we use `sampling_pdf` + injections), not a fundamental bug in the hierarchical PE event term.
+
+## 2026‑02‑04 follow-up: selection proxy needs explicit mass-ratio dependence
+
+The toy SBC isolation above suggested the core event-term bookkeeping was not the dominant issue, and that the remaining calibration failure under popZ+mass was coming from the injection-based **selection proxy**.
+
+We implemented and tested a more expressive detectability proxy:
+
+- `det_model=snr_mchirp_q_binned`: a simple 3D table \(p_\mathrm{det}(\rho_\mathrm{opt}, \mathcal{M}_\mathrm{det}, q)\)
+
+This is still a deliberately “cheap” proxy, but it can capture selection dependence on *both* component masses (equivalently \(\mathcal{M}\) and \(q\)) rather than only \(\mathcal{M}\).
+
+### Result: popZ+mass SBC becomes near-calibrated
+
+We reran the standard popZ+mass SBC stress test with the only material change being the detectability proxy:
+
+- Output bundle: `outputs/gate2_suite_sbc_uniform_fixedz062_popZmass_det3D_20260204_120529UTC`
+- Settings: \(H_0^\star\sim\mathrm{Uniform}[40,100]\), 256 reps × 25 detected events/rep, `z_max=0.62`,
+  `pop_z_mode=comoving_uniform`, `pop_mass_mode=powerlaw_peak_q_smooth`,
+  `inj_sampling_pdf_dist=log_dL`, `inj_sampling_pdf_mass_frame=detector`, `inj_sampling_pdf_mass_scale=linear`,
+  `det_model=snr_mchirp_q_binned` with `mchirp_binned_nbins=20`, `q_binned_nbins=10`, `snr_binned_nbins=200`.
+
+Aggregate (selection‑ON) SBC metrics from `tables/suite_aggregate.json`:
+
+- `u_h0_on_mean ≈ 0.482` (close to the expected 0.5)
+- `u_h0_on_ks ≈ 0.0667` (KS distance; much smaller than the previous popZ+mass case)
+- `bias_p50_on_mean ≈ +0.395 km/s/Mpc`
+- `coverage_68_on ≈ 0.641`, `coverage_95_on ≈ 0.918`
+
+For comparison, the earlier popZ+mass run with `det_model=snr_mchirp_binned` was strongly non-uniform:
+
+- `outputs/gate2_suite_sbc_uniform_fixedz062_20260204_030037UTC/tables/suite_aggregate.json`
+- `u_h0_on_mean ≈ 0.350`, `u_h0_on_ks ≈ 0.243`
+
+### Interpretation
+
+This strongly suggests the remaining Gate‑2 “broken feeling” under popZ+mass was driven primarily by **insufficiently-conditioned detectability modeling** in the injection-based \(\alpha(H_0)\) proxy (i.e. \(p_\mathrm{det}\) needs to “see” the mass-ratio dependence when we enable a mass population model).
+
+It does *not* prove the proxy is perfect (there is still a non-trivial edge-MAP rate in this suite), but it moves Gate‑2 from “obviously miscalibrated” to “close to calibrated” under a realistic population model — which is a meaningful step toward using Gate‑2 as a science-facing gate rather than a perpetual debugging treadmill.

@@ -272,12 +272,13 @@ def main() -> int:
 
     ap.add_argument(
         "--det-model",
-        choices=["threshold", "snr_binned", "snr_mchirp_binned"],
+        choices=["threshold", "snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"],
         default="snr_binned",
         help="Detectability proxy model (default snr_binned).",
     )
     ap.add_argument("--snr-binned-nbins", type=int, default=200, help="Bins for det_model=snr_binned (default 200).")
     ap.add_argument("--mchirp-binned-nbins", type=int, default=20, help="Chirp-mass bins for det_model=snr_mchirp_binned (default 20).")
+    ap.add_argument("--q-binned-nbins", type=int, default=10, help="Mass-ratio bins for det_model=snr_mchirp_q_binned (default 10).")
     ap.add_argument("--weight-mode", choices=["none", "inv_sampling_pdf"], default="inv_sampling_pdf", help="Injection weight mode (default inv_sampling_pdf).")
     ap.add_argument(
         "--inj-mass-pdf-coords",
@@ -451,6 +452,7 @@ def main() -> int:
         det_model=str(args.det_model),  # type: ignore[arg-type]
         snr_binned_nbins=int(args.snr_binned_nbins),
         mchirp_binned_nbins=int(args.mchirp_binned_nbins),
+        q_binned_nbins=int(args.q_binned_nbins),
         selection_ifar_thresh_yr=float(args.selection_ifar_thresh_yr),
         pop_z_mode=str(args.pop_z_mode),  # type: ignore[arg-type]
         pop_z_k=float(args.pop_z_k),

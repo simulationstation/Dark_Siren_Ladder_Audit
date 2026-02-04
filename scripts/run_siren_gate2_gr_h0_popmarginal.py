@@ -135,10 +135,11 @@ def main() -> int:
 
     ap.add_argument("--selection-injections-hdf", required=True, help="Path to O3 sensitivity injection file (HDF5).")
     ap.add_argument("--selection-ifar-thresh-yr", type=float, default=1.0)
-    ap.add_argument("--det-model", choices=["threshold", "snr_binned", "snr_mchirp_binned"], default="snr_binned")
+    ap.add_argument("--det-model", choices=["threshold", "snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"], default="snr_binned")
     ap.add_argument("--snr-thresh", type=float, default=None)
     ap.add_argument("--snr-binned-nbins", type=int, default=200)
     ap.add_argument("--mchirp-binned-nbins", type=int, default=20)
+    ap.add_argument("--q-binned-nbins", type=int, default=10)
     ap.add_argument("--weight-mode", choices=["none", "inv_sampling_pdf"], default="inv_sampling_pdf")
     ap.add_argument(
         "--inj-mass-pdf-coords",
@@ -321,6 +322,7 @@ def main() -> int:
                 snr_threshold=float(args.snr_thresh) if args.snr_thresh is not None else None,
                 snr_binned_nbins=int(args.snr_binned_nbins),
                 mchirp_binned_nbins=int(args.mchirp_binned_nbins),
+                q_binned_nbins=int(args.q_binned_nbins),
                 weight_mode=str(args.weight_mode),  # type: ignore[arg-type]
                 inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
                 inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]

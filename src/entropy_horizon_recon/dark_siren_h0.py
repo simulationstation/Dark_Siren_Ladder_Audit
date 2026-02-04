@@ -54,14 +54,16 @@ class CalibratedDetectionModel:
     numerator terms in hierarchical sanity tests.
     """
 
-    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned"]
+    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"]
     snr_threshold: float | None = None
     snr_binned_edges: np.ndarray | None = None  # (n_edges,)
     snr_binned_pdet: np.ndarray | None = None  # (n_edges-1,)
     mchirp_det_edges: np.ndarray | None = None  # (n_edges,)
     snr_mchirp_pdet: np.ndarray | None = None  # (n_mchirp_bins, n_snr_bins)
+    q_edges: np.ndarray | None = None  # (n_edges,)
+    snr_mchirp_q_pdet: np.ndarray | None = None  # (n_mchirp_bins, n_q_bins, n_snr_bins)
 
-    def pdet(self, snr: np.ndarray, *, mchirp_det: np.ndarray | None = None) -> np.ndarray:
+    def pdet(self, snr: np.ndarray, *, mchirp_det: np.ndarray | None = None, q: np.ndarray | None = None) -> np.ndarray:
         snr = np.asarray(snr, dtype=float)
         if self.det_model == "threshold":
             if self.snr_threshold is None:
@@ -84,6 +86,20 @@ class CalibratedDetectionModel:
             i_mc = np.clip(np.digitize(mc, self.mchirp_det_edges) - 1, 0, int(self.mchirp_det_edges.size) - 2)
             grid = np.asarray(self.snr_mchirp_pdet, dtype=float)
             return np.asarray(grid[i_mc, i_snr], dtype=float)
+        if self.det_model == "snr_mchirp_q_binned":
+            if self.snr_binned_edges is None or self.mchirp_det_edges is None or self.q_edges is None or self.snr_mchirp_q_pdet is None:
+                raise ValueError("CalibratedDetectionModel missing curves for det_model='snr_mchirp_q_binned'.")
+            if mchirp_det is None or q is None:
+                raise ValueError("det_model='snr_mchirp_q_binned' requires mchirp_det and q.")
+            mc = np.asarray(mchirp_det, dtype=float)
+            qq = np.asarray(q, dtype=float)
+            if mc.shape != snr.shape or qq.shape != snr.shape:
+                raise ValueError("mchirp_det and q must have the same shape as snr.")
+            i_snr = np.clip(np.digitize(snr, self.snr_binned_edges) - 1, 0, int(self.snr_binned_edges.size) - 2)
+            i_mc = np.clip(np.digitize(mc, self.mchirp_det_edges) - 1, 0, int(self.mchirp_det_edges.size) - 2)
+            i_q = np.clip(np.digitize(qq, self.q_edges) - 1, 0, int(self.q_edges.size) - 2)
+            grid3 = np.asarray(self.snr_mchirp_q_pdet, dtype=float)
+            return np.asarray(grid3[i_mc, i_q, i_snr], dtype=float)
         raise ValueError("Unknown det_model.")
 
 
@@ -91,11 +107,13 @@ def _calibrate_detection_model_from_snr_and_found(
     *,
     snr_net_opt: np.ndarray,
     found_ifar: np.ndarray,
-    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned"],
+    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"],
     snr_threshold: float | None,
     snr_binned_nbins: int,
     mchirp_det: np.ndarray | None = None,
     mchirp_binned_nbins: int = 20,
+    q: np.ndarray | None = None,
+    q_binned_nbins: int = 10,
     weights: np.ndarray | None = None,
 ) -> CalibratedDetectionModel:
     """Calibrate a p_det proxy curve from injections.
@@ -231,6 +249,83 @@ def _calibrate_detection_model_from_snr_and_found(
             snr_binned_edges=np.asarray(snr_edges, dtype=float),
             mchirp_det_edges=np.asarray(mc_edges, dtype=float),
             snr_mchirp_pdet=np.asarray(pdet, dtype=float),
+        )
+
+    if det_model == "snr_mchirp_q_binned":
+        if mchirp_det is None or q is None:
+            raise ValueError("det_model='snr_mchirp_q_binned' requires mchirp_det and q.")
+        mc = np.asarray(mchirp_det, dtype=float)
+        qq = np.asarray(q, dtype=float)
+        if mc.shape != snr.shape or qq.shape != snr.shape:
+            raise ValueError("mchirp_det, q, and snr_net_opt must have matching shapes for det_model='snr_mchirp_q_binned'.")
+        if not np.all(np.isfinite(mc)) or np.any(mc <= 0.0):
+            raise ValueError("mchirp_det must be finite and strictly positive for det_model='snr_mchirp_q_binned'.")
+        if not np.all(np.isfinite(qq)) or np.any(qq <= 0.0) or np.any(qq > 1.0):
+            raise ValueError("q must be finite and in (0,1] for det_model='snr_mchirp_q_binned'.")
+
+        nb_snr = int(snr_binned_nbins)
+        if nb_snr < 20:
+            raise ValueError("snr_binned_nbins too small (need >= 20).")
+        qs = np.linspace(0.0, 1.0, nb_snr + 1)
+        snr_edges = _weighted_quantile(snr, qs, w) if w is not None else np.quantile(snr, qs)
+        snr_edges = np.unique(snr_edges)
+        if snr_edges.size < 10:
+            raise ValueError("Too few unique SNR edges for snr_mchirp_q_binned.")
+        snr_bin = np.clip(np.digitize(snr, snr_edges) - 1, 0, snr_edges.size - 2)
+
+        nb_mc = int(mchirp_binned_nbins)
+        if nb_mc < 4:
+            raise ValueError("mchirp_binned_nbins too small (need >= 4).")
+        qs = np.linspace(0.0, 1.0, nb_mc + 1)
+        mc_edges = _weighted_quantile(mc, qs, w) if w is not None else np.quantile(mc, qs)
+        mc_edges = np.unique(mc_edges)
+        if mc_edges.size < 4:
+            raise ValueError("Too few unique mchirp_det edges for snr_mchirp_q_binned.")
+        mc_bin = np.clip(np.digitize(mc, mc_edges) - 1, 0, mc_edges.size - 2)
+
+        nb_q = int(q_binned_nbins)
+        if nb_q < 4:
+            raise ValueError("q_binned_nbins too small (need >= 4).")
+        qs = np.linspace(0.0, 1.0, nb_q + 1)
+        q_edges = _weighted_quantile(qq, qs, w) if w is not None else np.quantile(qq, qs)
+        q_edges = np.unique(q_edges)
+        if q_edges.size < 4:
+            raise ValueError("Too few unique q edges for snr_mchirp_q_binned.")
+        q_bin = np.clip(np.digitize(qq, q_edges) - 1, 0, q_edges.size - 2)
+
+        n_mc_bins = int(mc_edges.size) - 1
+        n_q_bins = int(q_edges.size) - 1
+        n_snr_bins = int(snr_edges.size) - 1
+        pdet = np.zeros((n_mc_bins, n_q_bins, n_snr_bins), dtype=float)
+        for i_mc in range(n_mc_bins):
+            m_i = mc_bin == i_mc
+            if not np.any(m_i):
+                continue
+            for i_q in range(n_q_bins):
+                m_iq = m_i & (q_bin == i_q)
+                if not np.any(m_iq):
+                    continue
+                for i_snr in range(n_snr_bins):
+                    m_ijk = m_iq & (snr_bin == i_snr)
+                    if not np.any(m_ijk):
+                        pdet[i_mc, i_q, i_snr] = pdet[i_mc, i_q, i_snr - 1] if i_snr > 0 else 0.0
+                        continue
+                    if w is None:
+                        pdet[i_mc, i_q, i_snr] = float(np.mean(found[m_ijk].astype(float)))
+                    else:
+                        wijk = w[m_ijk]
+                        wsum = float(np.sum(wijk))
+                        pdet[i_mc, i_q, i_snr] = (
+                            float(np.sum(wijk * found[m_ijk].astype(float)) / wsum) if wsum > 0.0 else (pdet[i_mc, i_q, i_snr - 1] if i_snr > 0 else 0.0)
+                        )
+                pdet[i_mc, i_q, :] = np.maximum.accumulate(np.clip(pdet[i_mc, i_q, :], 0.0, 1.0))
+
+        return CalibratedDetectionModel(
+            det_model="snr_mchirp_q_binned",
+            snr_binned_edges=np.asarray(snr_edges, dtype=float),
+            mchirp_det_edges=np.asarray(mc_edges, dtype=float),
+            q_edges=np.asarray(q_edges, dtype=float),
+            snr_mchirp_q_pdet=np.asarray(pdet, dtype=float),
         )
 
     raise ValueError("Unknown det_model.")
@@ -1002,8 +1097,8 @@ def _injection_weights(
     inj_sampling_pdf_dist: Literal["z", "dL", "log_dL"] = "z",
     inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source",
     inj_sampling_pdf_mass_scale: Literal["linear", "log"] = "linear",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return filtered (z, dL_fid, snr, found_ifar, chirp_mass_det, w) arrays for alpha(H0)."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return filtered (z, dL_fid, snr, found_ifar, chirp_mass_det, q, w) arrays for alpha(H0)."""
     z = np.asarray(injections.z, dtype=float)
     dL_fid = np.asarray(injections.dL_mpc_fid, dtype=float)
     snr = np.asarray(injections.snr_net_opt, dtype=float)
@@ -1041,6 +1136,7 @@ def _injection_weights(
     chirp_mass_det = chirp_mass_src * (1.0 + z)
     if not np.all(np.isfinite(chirp_mass_det)) or np.any(chirp_mass_det <= 0.0):
         raise ValueError("Invalid detector-frame chirp masses computed for injections.")
+    q_ratio = np.clip(m2 / m1, 1e-12, 1.0)
 
     w = np.ones_like(z, dtype=float)
     # Mixture-model injections provide an additional mixture weight (close to unity).
@@ -1197,7 +1293,7 @@ def _injection_weights(
         mmin = float(pop_m_min)
         mmax = float(pop_m_max)
         beta_q = float(pop_q_beta)
-        q = np.clip(m2 / m1, 1e-6, 1.0)
+        q = q_ratio
         if pop_mass_mode == "powerlaw_q":
             good_m = (m1 >= mmin) & (m1 <= mmax) & (m2 >= mmin) & (m2 <= m1)
             w = w * good_m.astype(float) * (m1 ** (-alpha)) * (q ** beta_q)
@@ -1257,9 +1353,10 @@ def _injection_weights(
         snr = snr[good_w]
         found = found[good_w]
         chirp_mass_det = chirp_mass_det[good_w]
+        q_ratio = q_ratio[good_w]
         w = w[good_w]
 
-    return z, dL_fid, snr, found, chirp_mass_det, w
+    return z, dL_fid, snr, found, chirp_mass_det, q_ratio, w
 
 
 def _alpha_h0_grid_from_injections(
@@ -1268,10 +1365,11 @@ def _alpha_h0_grid_from_injections(
     H0_grid: np.ndarray,
     dist_cache: LCDMDistanceCache,
     z_max: float,
-    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned"],
+    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"],
     snr_threshold: float | None,
     snr_binned_nbins: int,
     mchirp_binned_nbins: int = 20,
+    q_binned_nbins: int = 10,
     weight_mode: Literal["none", "inv_sampling_pdf"],
     pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw", "galaxy_hist"],
     pop_z_powerlaw_k: float,
@@ -1292,7 +1390,7 @@ def _alpha_h0_grid_from_injections(
     inj_sampling_pdf_mass_scale: Literal["linear", "log"] = "linear",
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Compute alpha(H0) on a grid using the same injection-rescaling proxy approach."""
-    z, dL_fid, snr, found, chirp_mass_det, w = _injection_weights(
+    z, dL_fid, snr, found, chirp_mass_det, q_ratio, w = _injection_weights(
         injections,
         weight_mode=weight_mode,
         pop_z_mode=pop_z_mode,
@@ -1323,6 +1421,8 @@ def _alpha_h0_grid_from_injections(
         snr_binned_nbins=int(snr_binned_nbins),
         mchirp_det=chirp_mass_det,
         mchirp_binned_nbins=int(mchirp_binned_nbins),
+        q=q_ratio,
+        q_binned_nbins=int(q_binned_nbins),
         weights=w,
     )
     thresh = det.snr_threshold
@@ -1343,7 +1443,7 @@ def _alpha_h0_grid_from_injections(
         dL_model = (constants.c_km_s / float(H0)) * fz
         dL_model = np.clip(dL_model, 1e-6, np.inf)
         snr_rescaled = snr * (dL_fid / dL_model)
-        pdet = det.pdet(snr_rescaled, mchirp_det=chirp_mass_det)
+        pdet = det.pdet(snr_rescaled, mchirp_det=chirp_mass_det, q=q_ratio)
         alpha[j] = float(np.sum(w * pdet) / wsum)
 
     meta = {
@@ -1352,6 +1452,7 @@ def _alpha_h0_grid_from_injections(
         "snr_threshold": float(thresh) if thresh is not None else None,
         "snr_binned_nbins": int(snr_binned_nbins),
         "mchirp_binned_nbins": int(mchirp_binned_nbins),
+        "q_binned_nbins": int(q_binned_nbins) if det_model == "snr_mchirp_q_binned" else None,
         "weight_mode": str(weight_mode),
         "inj_sampling_pdf_dist": str(inj_sampling_pdf_dist),
         "inj_sampling_pdf_mass_frame": str(inj_sampling_pdf_mass_frame),
@@ -1383,10 +1484,11 @@ def compute_alpha_h0_grid_pdet_marginalized(
     omega_m0: float,
     omega_k0: float,
     z_max: float,
-    det_model: Literal["snr_binned", "snr_mchirp_binned"] = "snr_mchirp_binned",
+    det_model: Literal["snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"] = "snr_mchirp_binned",
     snr_threshold: float | None = None,
     snr_binned_nbins: int = 200,
     mchirp_binned_nbins: int = 20,
+    q_binned_nbins: int = 10,
     weight_mode: Literal["none", "inv_sampling_pdf"] = "inv_sampling_pdf",
     pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw", "galaxy_hist"] = "none",
     pop_z_powerlaw_k: float = 0.0,
@@ -1419,8 +1521,8 @@ def compute_alpha_h0_grid_pdet_marginalized(
     This is intended as an *audit* tool to quantify whether H0 inference is selection-limited.
     It does not model full pipeline systematics (e.g. waveform systematics, search pipeline changes).
     """
-    if det_model not in ("snr_binned", "snr_mchirp_binned"):
-        raise ValueError("pdet marginalization currently supports only det_model in {'snr_binned','snr_mchirp_binned'}.")
+    if det_model not in ("snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"):
+        raise ValueError("pdet marginalization currently supports only det_model in {'snr_binned','snr_mchirp_binned','snr_mchirp_q_binned'}.")
     n_draws = int(n_pdet_draws)
     if n_draws <= 0:
         raise ValueError("n_pdet_draws must be positive.")
@@ -1433,7 +1535,7 @@ def compute_alpha_h0_grid_pdet_marginalized(
         raise ValueError("H0_grid must be 1D with >=2 points.")
 
     dist_cache = _build_lcdm_distance_cache(z_max=float(z_max), omega_m0=float(omega_m0), omega_k0=float(omega_k0))
-    z, dL_fid, snr, found, chirp_mass_det, w = _injection_weights(
+    z, dL_fid, snr, found, chirp_mass_det, q_ratio, w = _injection_weights(
         injections,
         weight_mode=weight_mode,
         pop_z_mode=pop_z_mode,
@@ -1465,6 +1567,8 @@ def compute_alpha_h0_grid_pdet_marginalized(
         snr_binned_nbins=int(snr_binned_nbins),
         mchirp_det=chirp_mass_det,
         mchirp_binned_nbins=int(mchirp_binned_nbins),
+        q=q_ratio,
+        q_binned_nbins=int(q_binned_nbins),
         weights=w,
     )
 
@@ -1477,15 +1581,26 @@ def compute_alpha_h0_grid_pdet_marginalized(
 
     mc_edges: np.ndarray | None = None
     mc_bin: np.ndarray | None = None
+    q_edges: np.ndarray | None = None
+    q_bin: np.ndarray | None = None
     n_mc_bins = 1
-    if det_model == "snr_mchirp_binned":
+    n_q_bins = 1
+    if det_model in ("snr_mchirp_binned", "snr_mchirp_q_binned"):
         if det.mchirp_det_edges is None:
-            raise ValueError("det_model=snr_mchirp_binned but missing mchirp_det_edges.")
+            raise ValueError(f"det_model={det_model} but missing mchirp_det_edges.")
         mc_edges = np.asarray(det.mchirp_det_edges, dtype=float)
         n_mc_bins = int(mc_edges.size) - 1
         if n_mc_bins <= 0:
             raise ValueError("Invalid mchirp_det edges.")
         mc_bin = np.clip(np.digitize(chirp_mass_det, mc_edges) - 1, 0, n_mc_bins - 1)
+    if det_model == "snr_mchirp_q_binned":
+        if det.q_edges is None:
+            raise ValueError("det_model=snr_mchirp_q_binned but missing q_edges.")
+        q_edges = np.asarray(det.q_edges, dtype=float)
+        n_q_bins = int(q_edges.size) - 1
+        if n_q_bins <= 0:
+            raise ValueError("Invalid q edges.")
+        q_bin = np.clip(np.digitize(q_ratio, q_edges) - 1, 0, n_q_bins - 1)
 
     # Bin assignments for calibration (fiducial snr).
     snr_bin_fid = np.clip(np.digitize(snr, snr_edges) - 1, 0, n_snr_bins - 1)
@@ -1506,7 +1621,7 @@ def compute_alpha_h0_grid_pdet_marginalized(
         b0 = pc + n_eff * (1.0 - np.clip(p_hat, 0.0, 1.0))
         a0 = np.clip(a0, pc, np.inf)
         b0 = np.clip(b0, pc, np.inf)
-    else:
+    elif det_model == "snr_mchirp_binned":
         assert mc_bin is not None
         # Flatten (mc,snr) to 1D bin for bincount.
         flat_fid = mc_bin * n_snr_bins + snr_bin_fid
@@ -1516,6 +1631,20 @@ def compute_alpha_h0_grid_pdet_marginalized(
         sum_w_found = np.bincount(flat_fid, weights=w * found_f, minlength=n_cells).astype(float)
         p_hat = np.divide(sum_w_found, np.clip(sum_w, 1e-300, np.inf)).reshape((n_mc_bins, n_snr_bins))
         n_eff = np.divide(sum_w * sum_w, np.clip(sum_w2, 1e-300, np.inf)).reshape((n_mc_bins, n_snr_bins))
+        a0 = pc + n_eff * np.clip(p_hat, 0.0, 1.0)
+        b0 = pc + n_eff * (1.0 - np.clip(p_hat, 0.0, 1.0))
+        a0 = np.clip(a0, pc, np.inf)
+        b0 = np.clip(b0, pc, np.inf)
+    else:
+        assert det_model == "snr_mchirp_q_binned"
+        assert mc_bin is not None and q_bin is not None
+        flat_fid = (mc_bin * n_q_bins + q_bin) * n_snr_bins + snr_bin_fid
+        n_cells = n_mc_bins * n_q_bins * n_snr_bins
+        sum_w = np.bincount(flat_fid, weights=w, minlength=n_cells).astype(float)
+        sum_w2 = np.bincount(flat_fid, weights=w * w, minlength=n_cells).astype(float)
+        sum_w_found = np.bincount(flat_fid, weights=w * found_f, minlength=n_cells).astype(float)
+        p_hat = np.divide(sum_w_found, np.clip(sum_w, 1e-300, np.inf)).reshape((n_mc_bins, n_q_bins, n_snr_bins))
+        n_eff = np.divide(sum_w * sum_w, np.clip(sum_w2, 1e-300, np.inf)).reshape((n_mc_bins, n_q_bins, n_snr_bins))
         a0 = pc + n_eff * np.clip(p_hat, 0.0, 1.0)
         b0 = pc + n_eff * (1.0 - np.clip(p_hat, 0.0, 1.0))
         a0 = np.clip(a0, pc, np.inf)
@@ -1536,8 +1665,10 @@ def compute_alpha_h0_grid_pdet_marginalized(
 
     if det_model == "snr_binned":
         n_cells = n_snr_bins
-    else:
+    elif det_model == "snr_mchirp_binned":
         n_cells = n_mc_bins * n_snr_bins
+    else:
+        n_cells = n_mc_bins * n_q_bins * n_snr_bins
 
     Wcell = np.zeros((n_cells, H0_grid.size), dtype=float)
     for j, H0 in enumerate(np.asarray(H0_grid, dtype=float).tolist()):
@@ -1545,9 +1676,14 @@ def compute_alpha_h0_grid_pdet_marginalized(
         snr_bin = np.clip(np.digitize(snr_rescaled, snr_edges) - 1, 0, n_snr_bins - 1)
         if det_model == "snr_binned":
             Wcell[:, j] = np.bincount(snr_bin, weights=w, minlength=n_snr_bins).astype(float)
-        else:
+        elif det_model == "snr_mchirp_binned":
             assert mc_bin is not None
             flat = mc_bin * n_snr_bins + snr_bin
+            Wcell[:, j] = np.bincount(flat, weights=w, minlength=n_cells).astype(float)
+        else:
+            assert det_model == "snr_mchirp_q_binned"
+            assert mc_bin is not None and q_bin is not None
+            flat = (mc_bin * n_q_bins + q_bin) * n_snr_bins + snr_bin
             Wcell[:, j] = np.bincount(flat, weights=w, minlength=n_cells).astype(float)
 
     # Deterministic alpha from the calibrated p_det (for reference).
@@ -1556,10 +1692,15 @@ def compute_alpha_h0_grid_pdet_marginalized(
             raise ValueError("Detection model missing snr_binned_pdet.")
         pdet0 = np.asarray(det.snr_binned_pdet, dtype=float)
         alpha0 = (pdet0.reshape((1, -1)) @ Wcell / wsum).reshape((-1,))
-    else:
+    elif det_model == "snr_mchirp_binned":
         if det.snr_mchirp_pdet is None:
             raise ValueError("Detection model missing snr_mchirp_pdet.")
         pdet0 = np.asarray(det.snr_mchirp_pdet, dtype=float).reshape((-1,))
+        alpha0 = (pdet0.reshape((1, -1)) @ Wcell / wsum).reshape((-1,))
+    else:
+        if det.snr_mchirp_q_pdet is None:
+            raise ValueError("Detection model missing snr_mchirp_q_pdet.")
+        pdet0 = np.asarray(det.snr_mchirp_q_pdet, dtype=float).reshape((-1,))
         alpha0 = (pdet0.reshape((1, -1)) @ Wcell / wsum).reshape((-1,))
 
     rng = np.random.default_rng(int(pdet_draw_seed))
@@ -1569,12 +1710,18 @@ def compute_alpha_h0_grid_pdet_marginalized(
             p = rng.beta(a0, b0)
             p = np.maximum.accumulate(np.clip(p, 0.0, 1.0))
             alpha = (p.reshape((1, -1)) @ Wcell / wsum).reshape((-1,))
-        else:
+        elif det_model == "snr_mchirp_binned":
             # Sample independent Beta per cell then enforce monotone along SNR for each mchirp row.
             p2 = rng.beta(a0, b0)
             p2 = np.clip(p2, 0.0, 1.0)
             p2 = np.maximum.accumulate(p2, axis=1)
             alpha = (p2.reshape((1, -1)) @ Wcell / wsum).reshape((-1,))
+        else:
+            # Sample independent Beta per cell then enforce monotone along SNR for each (mchirp, q) slab.
+            p3 = rng.beta(a0, b0)
+            p3 = np.clip(p3, 0.0, 1.0)
+            p3 = np.maximum.accumulate(p3, axis=2)
+            alpha = (p3.reshape((1, -1)) @ Wcell / wsum).reshape((-1,))
         alpha_draws[r, :] = np.clip(alpha, 1e-300, np.inf)
 
     # Summary stats for log alpha across draws at each H0.
@@ -1602,6 +1749,7 @@ def compute_alpha_h0_grid_pdet_marginalized(
         "snr_threshold": float(det.snr_threshold) if det.snr_threshold is not None else None,
         "snr_binned_nbins": int(snr_binned_nbins),
         "mchirp_binned_nbins": int(mchirp_binned_nbins),
+        "q_binned_nbins": int(q_binned_nbins) if det_model == "snr_mchirp_q_binned" else None,
         "n_injections_used": int(z.size),
         "n_pdet_draws": int(n_draws),
         "pdet_pseudocount": float(pc),
@@ -1637,10 +1785,11 @@ def compute_gr_h0_posterior_grid(
     injections: O3aBbhInjectionSet | None,
     ifar_threshold_yr: float,
     z_max: float,
-    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned"],
+    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"],
     snr_threshold: float | None,
     snr_binned_nbins: int,
     mchirp_binned_nbins: int = 20,
+    q_binned_nbins: int = 10,
     weight_mode: Literal["none", "inv_sampling_pdf"],
     pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw", "galaxy_hist"],
     pop_z_powerlaw_k: float,
@@ -1912,6 +2061,7 @@ def compute_gr_h0_posterior_grid(
             snr_threshold=snr_threshold,
             snr_binned_nbins=int(snr_binned_nbins),
             mchirp_binned_nbins=int(mchirp_binned_nbins),
+            q_binned_nbins=int(q_binned_nbins),
             weight_mode=weight_mode,
             pop_z_mode=pop_z_mode,
             pop_z_powerlaw_k=float(pop_z_powerlaw_k),
@@ -2058,7 +2208,7 @@ def _event_logL_h0_grid_from_hierarchical_pe_samples(
         if not (np.isfinite(snr_norm) and snr_norm > 0.0):
             raise ValueError("Invalid snr_norm from (snr_net_opt_ref, dL_mpc_ref).")
         snr_samp = snr_norm / np.clip(dL_s, 1e-12, np.inf)
-        pdet = det_model.pdet(snr_samp, mchirp_det=mc_det)
+        pdet = det_model.pdet(snr_samp, mchirp_det=mc_det, q=q)
         log_pdet_samp = np.log(np.clip(pdet, 1e-300, 1.0))
 
     z_grid = np.asarray(dist_cache.z_grid, dtype=float)
@@ -2334,10 +2484,11 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
     pop_z_include_h0_volume_scaling: bool = False,
     injections: O3aBbhInjectionSet | None,
     ifar_threshold_yr: float,
-    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned"],
+    det_model: Literal["threshold", "snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"],
     snr_threshold: float | None,
     snr_binned_nbins: int,
     mchirp_binned_nbins: int = 20,
+    q_binned_nbins: int = 10,
     weight_mode: Literal["none", "inv_sampling_pdf"],
     pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw"],
     pop_z_powerlaw_k: float,
@@ -2387,7 +2538,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
         if injections is None:
             raise ValueError("include_pdet_in_event_term=True requires either pdet_model or injections for calibration.")
         # Match the filtering used by alpha(H0): use the same injection cuts and population support (via _injection_weights).
-        _z, _dL_fid, _snr, _found, _mc_det, _w = _injection_weights(
+        _z, _dL_fid, _snr, _found, _mc_det, _q, _w = _injection_weights(
             injections,
             weight_mode=weight_mode,
             pop_z_mode=pop_z_mode,
@@ -2415,6 +2566,8 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
             snr_binned_nbins=int(snr_binned_nbins),
             mchirp_det=_mc_det,
             mchirp_binned_nbins=int(mchirp_binned_nbins),
+            q=_q,
+            q_binned_nbins=int(q_binned_nbins),
             weights=_w,
         )
 
@@ -2441,6 +2594,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
             else None,
             "snr_binned_nbins": int(snr_binned_nbins),
             "mchirp_binned_nbins": int(mchirp_binned_nbins),
+            "q_binned_nbins": int(q_binned_nbins) if str(det_model) == "snr_mchirp_q_binned" else None,
         }
 
     per_event: list[dict[str, Any]] = []
@@ -2755,6 +2909,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
             snr_threshold=snr_threshold,
             snr_binned_nbins=int(snr_binned_nbins),
             mchirp_binned_nbins=int(mchirp_binned_nbins),
+            q_binned_nbins=int(q_binned_nbins),
             weight_mode=weight_mode,
             pop_z_mode=pop_z_mode,
             pop_z_powerlaw_k=float(pop_z_powerlaw_k),

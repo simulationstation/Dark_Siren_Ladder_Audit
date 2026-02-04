@@ -101,13 +101,15 @@ def main() -> int:
         sel_meta = {}
 
     det_model = str(sel_meta.get("det_model", gate2.get("det_model", "snr_mchirp_binned")))
-    if det_model not in ("snr_binned", "snr_mchirp_binned"):
-        raise ValueError("This marginalizer supports only det_model in {'snr_binned','snr_mchirp_binned'}.")
+    if det_model not in ("snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"):
+        raise ValueError("This marginalizer supports only det_model in {'snr_binned','snr_mchirp_binned','snr_mchirp_q_binned'}.")
 
     snr_threshold = sel_meta.get("snr_threshold", None)
     snr_threshold_f = float(snr_threshold) if snr_threshold is not None else None
     snr_binned_nbins = int(sel_meta.get("snr_binned_nbins", 200))
     mchirp_binned_nbins = int(sel_meta.get("mchirp_binned_nbins", 20))
+    q_binned_raw = sel_meta.get("q_binned_nbins", None)
+    q_binned_nbins = int(q_binned_raw) if q_binned_raw is not None else 10
     weight_mode = str(sel_meta.get("weight_mode", "inv_sampling_pdf"))
     pop = gate2.get("population") or {}
     if not isinstance(pop, dict):
@@ -159,6 +161,7 @@ def main() -> int:
         snr_threshold=snr_threshold_f,
         snr_binned_nbins=snr_binned_nbins,
         mchirp_binned_nbins=mchirp_binned_nbins,
+        q_binned_nbins=q_binned_nbins,
         weight_mode=weight_mode,  # type: ignore[arg-type]
         pop_z_mode=pop_z_mode,  # type: ignore[arg-type]
         pop_z_powerlaw_k=pop_z_k,

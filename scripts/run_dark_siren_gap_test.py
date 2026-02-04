@@ -1122,13 +1122,14 @@ def main() -> int:
     ap.add_argument("--selection-z-max", type=float, default=None, help="Max injection redshift used in alpha(model) (default: min(gal-z-max, post.z_grid.max)).")
     ap.add_argument(
         "--selection-det-model",
-        choices=["threshold", "snr_binned", "snr_mchirp_binned"],
+        choices=["threshold", "snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"],
         default="snr_binned",
         help=(
             "Detection model used in alpha(model).\n"
             "  - threshold: hard SNR threshold (if --selection-snr-thresh omitted, calibrates to match found_ifar)\n"
             "  - snr_binned: empirical monotone p_det(SNR) curve from injections\n"
             "  - snr_mchirp_binned: simple 2D p_det(SNR, Mchirp_det) table from injections (recommended)\n"
+            "  - snr_mchirp_q_binned: simple 3D p_det(SNR, Mchirp_det, q) table from injections (recommended when pop_mass_mode is enabled)\n"
         ),
     )
     ap.add_argument(
@@ -1148,6 +1149,12 @@ def main() -> int:
         type=int,
         default=20,
         help="Number of chirp-mass bins for --selection-det-model=snr_mchirp_binned (default 20).",
+    )
+    ap.add_argument(
+        "--selection-q-binned-nbins",
+        type=int,
+        default=10,
+        help="Number of mass-ratio bins for --selection-det-model=snr_mchirp_q_binned (default 10).",
     )
     ap.add_argument(
         "--selection-weight-mode",
@@ -2824,6 +2831,7 @@ def main() -> int:
             snr_threshold=float(args.selection_snr_thresh) if args.selection_snr_thresh is not None else None,
             snr_binned_nbins=int(args.selection_snr_binned_nbins),
             mchirp_binned_nbins=int(args.selection_mchirp_binned_nbins),
+            q_binned_nbins=int(args.selection_q_binned_nbins),
             weight_mode=str(args.selection_weight_mode),
             pop_z_mode=str(gr_sel_pop_z_mode),  # type: ignore[arg-type]
             pop_z_powerlaw_k=float(gr_sel_pop_z_k),
@@ -2854,9 +2862,9 @@ def main() -> int:
                 print("[dark_sirens] GR H0 pdet-marginalize: skipped (selection disabled)", flush=True)
             else:
                 det_model = str(args.selection_det_model)
-                if det_model not in ("snr_binned", "snr_mchirp_binned"):
+                if det_model not in ("snr_binned", "snr_mchirp_binned", "snr_mchirp_q_binned"):
                     print(
-                        f"[dark_sirens] GR H0 pdet-marginalize: skipped (det_model={det_model} not supported; use snr_binned or snr_mchirp_binned)",
+                        f"[dark_sirens] GR H0 pdet-marginalize: skipped (det_model={det_model} not supported; use snr_binned, snr_mchirp_binned, or snr_mchirp_q_binned)",
                         flush=True,
                     )
                 else:
@@ -2880,6 +2888,7 @@ def main() -> int:
                         snr_threshold=float(args.selection_snr_thresh) if args.selection_snr_thresh is not None else None,
                         snr_binned_nbins=int(args.selection_snr_binned_nbins),
                         mchirp_binned_nbins=int(args.selection_mchirp_binned_nbins),
+                        q_binned_nbins=int(args.selection_q_binned_nbins),
                         weight_mode=str(args.selection_weight_mode),  # type: ignore[arg-type]
                         pop_z_mode=str(gr_sel_pop_z_mode),  # type: ignore[arg-type]
                         pop_z_powerlaw_k=float(gr_sel_pop_z_k),
