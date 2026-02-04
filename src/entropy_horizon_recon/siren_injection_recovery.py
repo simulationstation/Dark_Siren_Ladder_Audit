@@ -140,6 +140,7 @@ class InjectionRecoveryConfig:
     # Event quality control (mirrors Gate-2 GR H0 runner semantics).
     event_qc_mode: Literal["fail", "skip"] = "skip"
     event_min_finite_frac: float = 0.0
+    event_min_ess: float = 0.0
 
     # Importance-sampling stabilization for the hierarchical PE reweighting.
     #
@@ -956,6 +957,7 @@ def run_injection_recovery_gr_h0(
         pop_m_peak_frac=float(cfg.pop_m_peak_frac),
         event_qc_mode=str(cfg.event_qc_mode),  # type: ignore[arg-type]
         event_min_finite_frac=float(cfg.event_min_finite_frac),
+        event_min_ess=float(cfg.event_min_ess),
         prior="uniform",
     )
 

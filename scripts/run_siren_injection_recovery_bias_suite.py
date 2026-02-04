@@ -135,6 +135,7 @@ def main() -> int:
 
     ap.add_argument("--event-qc-mode", choices=["fail", "skip"], default="skip")
     ap.add_argument("--event-min-finite-frac", type=float, default=0.0)
+    ap.add_argument("--event-min-ess", type=float, default=0.0)
     ap.add_argument("--importance-smoothing", choices=["none", "truncate", "psis"], default="none")
     ap.add_argument("--importance-truncate-tau", type=float, default=None)
 
@@ -201,6 +202,7 @@ def main() -> int:
         pe_prior_mass_ratio_expr=str(args.pe_prior_mass_ratio_expr),
         event_qc_mode=str(args.event_qc_mode),  # type: ignore[arg-type]
         event_min_finite_frac=float(args.event_min_finite_frac),
+        event_min_ess=float(args.event_min_ess),
         importance_smoothing=str(args.importance_smoothing),  # type: ignore[arg-type]
         importance_truncate_tau=float(args.importance_truncate_tau) if args.importance_truncate_tau is not None else None,
     )

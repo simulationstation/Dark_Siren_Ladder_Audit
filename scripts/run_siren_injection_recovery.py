@@ -167,6 +167,12 @@ def main() -> int:
         default=0.0,
         help="Minimum finite-support fraction across H0 grid (default 0; disables 'insufficient support' skipping).",
     )
+    ap.add_argument(
+        "--event-min-ess",
+        type=float,
+        default=0.0,
+        help="Minimum ESS across H0 grid per event (default 0; disables low-ESS skipping).",
+    )
 
     ap.add_argument(
         "--importance-smoothing",
@@ -262,6 +268,7 @@ def main() -> int:
         pe_prior_mass_ratio_expr=str(args.pe_prior_mass_ratio_expr),
         event_qc_mode=str(args.event_qc_mode),  # type: ignore[arg-type]
         event_min_finite_frac=float(args.event_min_finite_frac),
+        event_min_ess=float(args.event_min_ess),
         importance_smoothing=str(args.importance_smoothing),  # type: ignore[arg-type]
         importance_truncate_tau=float(args.importance_truncate_tau) if args.importance_truncate_tau is not None else None,
     )
