@@ -38,6 +38,7 @@ Output:
 - `outputs/gate2_suite_sbc_uniform_fixedz062_20260204_030037UTC/tables/suite_aggregate.json`
 
 Observed:
+- `u_h0_off_mean ≈ 0.113` and `u_h0_off_ks ≈ 0.645` (very non-uniform; this is the expected “ignore-selection” bias for detected-only samples)
 - `u_h0_on_mean ≈ 0.350` and `u_h0_on_ks ≈ 0.243` (KS p-value \(\sim 8\times 10^{-4}\); strongly non-uniform)
 - indicates the selection-on posterior tends to place \(H_0^\star\) in the *lower* CDF tail (i.e. the posterior is typically shifted **high** relative to truth under this broad truth prior)
 
@@ -56,6 +57,7 @@ Output:
 - `outputs/gate2_suite_sbc_uniform_fixedz062_popNone_det1D_20260204_031452UTC/tables/suite_aggregate.json`
 
 Observed:
+- `u_h0_off_mean ≈ 0.061` and `u_h0_off_ks ≈ 0.737` (again: strong ignore-selection bias)
 - `u_h0_on_mean ≈ 0.502` and `u_h0_on_ks ≈ 0.105` (much closer to Uniform\([0,1]\))
 - BUT many boundary-peaked posteriors (`H0_map_at_edge_on_n` large), i.e. this is *not* a viable science configuration; it’s a **sanity check** showing the SBC machinery itself isn’t broken.
 
@@ -116,4 +118,4 @@ Since the sampling‑pdf convention isn’t the root cause, the remaining likely
 - **Detectability proxy limitations**: miscalibrated `p_det(SNR, Mchirp_det)` shape can dominate totals even when α(H0) matches external oracles.
 
 Concrete immediate work item:
-- extend the suite tables to report both `u_h0_off_*` (selection‑off) and `u_h0_on_*` so we can localize the miscalibration to the event term or the selection term.
+- extend the suite aggregate + figures to report both `u_h0_off_*` (selection‑off) and `u_h0_on_*` so we can localize the miscalibration to the event term or the selection term (**done**: `scripts/run_siren_injection_recovery_suite.py` now writes `u_h0_off_*` to `tables/suite_aggregate.json` and plots `figures/sbc_u_h0_off_{cdf,hist}.png`).
