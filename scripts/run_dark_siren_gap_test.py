@@ -1336,6 +1336,30 @@ def main() -> int:
         help="Include an H0^{-3} volume-scaling factor in the GR H0 selection normalization term (audit/debug knob).",
     )
     ap.add_argument(
+        "--gr-h0-selection-pop-z-mode",
+        choices=["inherit", "none", "comoving_uniform", "comoving_powerlaw", "galaxy_hist"],
+        default="inherit",
+        help=(
+            "Population/host redshift weighting used *only* in the GR H0 selection normalization alpha(H0).\n"
+            "  - inherit: use --selection-pop-z-mode\n"
+            "  - galaxy_hist: weight injections by an empirical p(z) built from the loaded galaxy catalog (z,w)\n"
+            "               (intended to match the catalog-host prior used in the numerator).\n"
+            "Default: inherit."
+        ),
+    )
+    ap.add_argument(
+        "--gr-h0-selection-pop-z-k",
+        type=float,
+        default=None,
+        help="k exponent when --gr-h0-selection-pop-z-mode=comoving_powerlaw (default: inherit --selection-pop-z-k).",
+    )
+    ap.add_argument(
+        "--gr-h0-selection-galaxy-hist-nbins",
+        type=int,
+        default=300,
+        help="Number of redshift bins for --gr-h0-selection-pop-z-mode=galaxy_hist (default 300).",
+    )
+    ap.add_argument(
         "--gr-h0-pdet-marginalize",
         action="store_true",
         help=(
@@ -2736,6 +2760,45 @@ def main() -> int:
             gr_events.append(row)
 
         gw_path0 = Path(gr_events[0]["pe_file"] if str(gr_events[0].get("gw_data_mode")) == "pe" else gr_events[0]["skymap_path"])
+        # Selection-population z weighting for GR H0 control (can differ from μ-vs-GR selection weights).
+        gr_sel_pop_z_mode = str(args.gr_h0_selection_pop_z_mode)
+        gr_sel_pop_z_k = float(args.selection_pop_z_k) if args.gr_h0_selection_pop_z_k is None else float(args.gr_h0_selection_pop_z_k)
+        if gr_sel_pop_z_mode == "inherit":
+            gr_sel_pop_z_mode = str(args.selection_pop_z_mode)
+            gr_sel_pop_z_k = float(args.selection_pop_z_k)
+
+        z_sel = float(args.selection_z_max) if args.selection_z_max is not None else float(args.gal_z_max)
+        galaxy_z_edges: np.ndarray | None = None
+        galaxy_z_density: np.ndarray | None = None
+        if gr_sel_pop_z_mode == "galaxy_hist":
+            nb = int(args.gr_h0_selection_galaxy_hist_nbins)
+            if nb < 20:
+                raise ValueError("--gr-h0-selection-galaxy-hist-nbins too small (use >=20).")
+            if not (np.isfinite(z_sel) and z_sel > 0.0):
+                raise ValueError("Invalid z_sel for galaxy_hist selection prior.")
+
+            z_cat = np.asarray(cat.z, dtype=float)
+            w_cat = np.asarray(cat.w, dtype=float)
+            m = np.isfinite(z_cat) & (z_cat > 0.0) & (z_cat <= float(z_sel)) & np.isfinite(w_cat) & (w_cat > 0.0)
+            if not np.any(m):
+                raise ValueError("No finite positive galaxy (z,w) entries available for galaxy_hist selection prior.")
+
+            galaxy_z_edges = np.linspace(0.0, float(z_sel), nb + 1)
+            counts = np.histogram(z_cat[m], bins=galaxy_z_edges, weights=w_cat[m])[0].astype(float)
+            widths = np.diff(galaxy_z_edges)
+            density = counts / np.clip(widths, 1e-300, np.inf)
+            pos = density > 0.0
+            if not np.any(pos):
+                raise ValueError("Galaxy z histogram has no positive bins (check z_sel and weights).")
+            density = density / float(np.mean(density[pos]))
+            galaxy_z_density = density.astype(float)
+            np.savez_compressed(
+                tab_dir / "gr_h0_selection_galaxy_z_hist.npz",
+                z_edges=np.asarray(galaxy_z_edges, dtype=float),
+                z_density=np.asarray(galaxy_z_density, dtype=float),
+                z_sel=float(z_sel),
+            )
+
         gr_res = compute_gr_h0_posterior_grid(
             events=gr_events,
             H0_grid=H0_grid,
@@ -2756,14 +2819,14 @@ def main() -> int:
             missing_pixel_chunk_size=int(args.missing_pixel_chunk_size),
             injections=injections,
             ifar_threshold_yr=float(args.selection_ifar_thresh_yr),
-            z_max=float(args.selection_z_max) if args.selection_z_max is not None else float(args.gal_z_max),
+            z_max=float(z_sel),
             det_model=str(args.selection_det_model),
             snr_threshold=float(args.selection_snr_thresh) if args.selection_snr_thresh is not None else None,
             snr_binned_nbins=int(args.selection_snr_binned_nbins),
             mchirp_binned_nbins=int(args.selection_mchirp_binned_nbins),
             weight_mode=str(args.selection_weight_mode),
-            pop_z_mode=str(args.selection_pop_z_mode),
-            pop_z_powerlaw_k=float(args.selection_pop_z_k),
+            pop_z_mode=str(gr_sel_pop_z_mode),  # type: ignore[arg-type]
+            pop_z_powerlaw_k=float(gr_sel_pop_z_k),
             pop_mass_mode=str(args.selection_pop_mass_mode),
             pop_m1_alpha=float(args.selection_pop_m1_alpha),
             pop_m_min=float(args.selection_pop_m_min),
@@ -2773,6 +2836,8 @@ def main() -> int:
             pop_m_peak=float(args.selection_pop_m_peak),
             pop_m_peak_sigma=float(args.selection_pop_m_peak_sigma),
             pop_m_peak_frac=float(args.selection_pop_m_peak_frac),
+            galaxy_z_edges=galaxy_z_edges,
+            galaxy_z_density=galaxy_z_density,
             inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),
             inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),
             inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),
@@ -2805,7 +2870,6 @@ def main() -> int:
                     if n_events_eff <= 0:
                         raise ValueError("Invalid GR H0 posterior n_events for pdet marginalization.")
 
-                    z_sel = float(args.selection_z_max) if args.selection_z_max is not None else float(args.gal_z_max)
                     alpha_meta, alpha_draws = compute_alpha_h0_grid_pdet_marginalized(
                         injections=injections,
                         H0_grid=H0g,
@@ -2817,8 +2881,8 @@ def main() -> int:
                         snr_binned_nbins=int(args.selection_snr_binned_nbins),
                         mchirp_binned_nbins=int(args.selection_mchirp_binned_nbins),
                         weight_mode=str(args.selection_weight_mode),  # type: ignore[arg-type]
-                        pop_z_mode=str(args.selection_pop_z_mode),  # type: ignore[arg-type]
-                        pop_z_powerlaw_k=float(args.selection_pop_z_k),
+                        pop_z_mode=str(gr_sel_pop_z_mode),  # type: ignore[arg-type]
+                        pop_z_powerlaw_k=float(gr_sel_pop_z_k),
                         pop_mass_mode=str(args.selection_pop_mass_mode),  # type: ignore[arg-type]
                         pop_m1_alpha=float(args.selection_pop_m1_alpha),
                         pop_m_min=float(args.selection_pop_m_min),
@@ -2828,6 +2892,8 @@ def main() -> int:
                         pop_m_peak=float(args.selection_pop_m_peak),
                         pop_m_peak_sigma=float(args.selection_pop_m_peak_sigma),
                         pop_m_peak_frac=float(args.selection_pop_m_peak_frac),
+                        galaxy_z_edges=galaxy_z_edges,
+                        galaxy_z_density=galaxy_z_density,
                         inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
                         inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
                         inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
@@ -2869,8 +2935,8 @@ def main() -> int:
                         "selection_det_model": str(args.selection_det_model),
                         "selection_weight_mode": str(args.selection_weight_mode),
                         "selection_include_h0_volume_scaling": bool(args.gr_h0_selection_include_h0_volume_scaling),
-                        "selection_pop_z_mode": str(args.selection_pop_z_mode),
-                        "selection_pop_z_k": float(args.selection_pop_z_k),
+                        "selection_pop_z_mode": str(gr_sel_pop_z_mode),
+                        "selection_pop_z_k": float(gr_sel_pop_z_k),
                         "selection_pop_mass_mode": str(args.selection_pop_mass_mode),
                         "selection_pop_m1_alpha": float(args.selection_pop_m1_alpha),
                         "selection_pop_m_min": float(args.selection_pop_m_min),

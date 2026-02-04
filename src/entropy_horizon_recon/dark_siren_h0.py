@@ -984,7 +984,7 @@ def _injection_weights(
     injections: O3aBbhInjectionSet,
     *,
     weight_mode: Literal["none", "inv_sampling_pdf"],
-    pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw"],
+    pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw", "galaxy_hist"],
     pop_z_powerlaw_k: float,
     pop_mass_mode: Literal["none", "powerlaw_q", "powerlaw_q_smooth", "powerlaw_peak_q_smooth"],
     pop_m1_alpha: float,
@@ -996,6 +996,8 @@ def _injection_weights(
     pop_m_peak_sigma: float,
     pop_m_peak_frac: float,
     z_max: float,
+    galaxy_z_edges: np.ndarray | None = None,
+    galaxy_z_density: np.ndarray | None = None,
     inj_mass_pdf_coords: Literal["m1m2", "m1q"] = "m1m2",
     inj_sampling_pdf_dist: Literal["z", "dL", "log_dL"] = "z",
     inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source",
@@ -1150,20 +1152,34 @@ def _injection_weights(
 
     if pop_z_mode != "none":
         # Same simple LCDM approximation used in dark_sirens_selection.py (population factor only).
-        H0 = 67.7  # km/s/Mpc
-        om0 = 0.31
-        c = 299792.458  # km/s
-        z_grid = np.linspace(0.0, float(np.max(z)), 5001)
-        Ez = np.sqrt(om0 * (1.0 + z_grid) ** 3 + (1.0 - om0))
-        dc = (c / H0) * np.cumsum(np.concatenate([[0.0], 0.5 * (1.0 / Ez[1:] + 1.0 / Ez[:-1]) * np.diff(z_grid)]))
-        dVdz = (c / (H0 * np.interp(z, z_grid, Ez))) * (np.interp(z, z_grid, dc) ** 2)
-        base = dVdz / (1.0 + z)
-        if pop_z_mode == "comoving_uniform":
-            w = w * base
-        elif pop_z_mode == "comoving_powerlaw":
-            w = w * base * (1.0 + z) ** float(pop_z_powerlaw_k)
+        if pop_z_mode == "galaxy_hist":
+            if galaxy_z_edges is None or galaxy_z_density is None:
+                raise ValueError("pop_z_mode='galaxy_hist' requires galaxy_z_edges and galaxy_z_density.")
+            edges = np.asarray(galaxy_z_edges, dtype=float)
+            dens = np.asarray(galaxy_z_density, dtype=float)
+            if edges.ndim != 1 or edges.size < 3 or np.any(~np.isfinite(edges)) or np.any(np.diff(edges) <= 0.0):
+                raise ValueError("galaxy_z_edges must be 1D, finite, and strictly increasing with >=3 entries.")
+            if dens.ndim != 1 or dens.size != edges.size - 1 or np.any(~np.isfinite(dens)) or np.any(dens < 0.0):
+                raise ValueError("galaxy_z_density must be 1D, finite, non-negative, and match len(galaxy_z_edges)-1.")
+            if not np.any(dens > 0.0):
+                raise ValueError("galaxy_z_density has no positive entries.")
+            idx = np.clip(np.digitize(z, edges) - 1, 0, int(dens.size) - 1)
+            w = w * np.asarray(dens[idx], dtype=float)
         else:
-            raise ValueError("Unknown pop_z_mode.")
+            H0 = 67.7  # km/s/Mpc
+            om0 = 0.31
+            c = 299792.458  # km/s
+            z_grid = np.linspace(0.0, float(np.max(z)), 5001)
+            Ez = np.sqrt(om0 * (1.0 + z_grid) ** 3 + (1.0 - om0))
+            dc = (c / H0) * np.cumsum(np.concatenate([[0.0], 0.5 * (1.0 / Ez[1:] + 1.0 / Ez[:-1]) * np.diff(z_grid)]))
+            dVdz = (c / (H0 * np.interp(z, z_grid, Ez))) * (np.interp(z, z_grid, dc) ** 2)
+            base = dVdz / (1.0 + z)
+            if pop_z_mode == "comoving_uniform":
+                w = w * base
+            elif pop_z_mode == "comoving_powerlaw":
+                w = w * base * (1.0 + z) ** float(pop_z_powerlaw_k)
+            else:
+                raise ValueError("Unknown pop_z_mode.")
 
     if pop_mass_mode != "none":
         if weight_mode == "inv_sampling_pdf":
@@ -1257,7 +1273,7 @@ def _alpha_h0_grid_from_injections(
     snr_binned_nbins: int,
     mchirp_binned_nbins: int = 20,
     weight_mode: Literal["none", "inv_sampling_pdf"],
-    pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw"],
+    pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw", "galaxy_hist"],
     pop_z_powerlaw_k: float,
     pop_mass_mode: Literal["none", "powerlaw_q", "powerlaw_q_smooth", "powerlaw_peak_q_smooth"],
     pop_m1_alpha: float,
@@ -1268,6 +1284,8 @@ def _alpha_h0_grid_from_injections(
     pop_m_peak: float = 35.0,
     pop_m_peak_sigma: float = 5.0,
     pop_m_peak_frac: float = 0.1,
+    galaxy_z_edges: np.ndarray | None = None,
+    galaxy_z_density: np.ndarray | None = None,
     inj_mass_pdf_coords: Literal["m1m2", "m1q"] = "m1m2",
     inj_sampling_pdf_dist: Literal["z", "dL", "log_dL"] = "z",
     inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source",
@@ -1289,6 +1307,8 @@ def _alpha_h0_grid_from_injections(
         pop_m_peak_sigma=pop_m_peak_sigma,
         pop_m_peak_frac=pop_m_peak_frac,
         z_max=z_max,
+        galaxy_z_edges=galaxy_z_edges,
+        galaxy_z_density=galaxy_z_density,
         inj_mass_pdf_coords=inj_mass_pdf_coords,
         inj_sampling_pdf_dist=inj_sampling_pdf_dist,
         inj_sampling_pdf_mass_frame=inj_sampling_pdf_mass_frame,
@@ -1338,6 +1358,8 @@ def _alpha_h0_grid_from_injections(
         "inj_sampling_pdf_mass_scale": str(inj_sampling_pdf_mass_scale),
         "pop_z_mode": str(pop_z_mode),
         "pop_z_k": float(pop_z_powerlaw_k),
+        "galaxy_z_hist_nbins": int(np.asarray(galaxy_z_density).size) if pop_z_mode == "galaxy_hist" and galaxy_z_density is not None else None,
+        "galaxy_z_hist_zmax": float(np.asarray(galaxy_z_edges)[-1]) if pop_z_mode == "galaxy_hist" and galaxy_z_edges is not None else None,
         "pop_mass_mode": str(pop_mass_mode),
         "inj_mass_pdf_coords": str(inj_mass_pdf_coords),
         "pop_m1_alpha": float(pop_m1_alpha),
@@ -1366,7 +1388,7 @@ def compute_alpha_h0_grid_pdet_marginalized(
     snr_binned_nbins: int = 200,
     mchirp_binned_nbins: int = 20,
     weight_mode: Literal["none", "inv_sampling_pdf"] = "inv_sampling_pdf",
-    pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw"] = "none",
+    pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw", "galaxy_hist"] = "none",
     pop_z_powerlaw_k: float = 0.0,
     pop_mass_mode: Literal["none", "powerlaw_q", "powerlaw_q_smooth", "powerlaw_peak_q_smooth"] = "none",
     pop_m1_alpha: float = 2.3,
@@ -1377,6 +1399,8 @@ def compute_alpha_h0_grid_pdet_marginalized(
     pop_m_peak: float = 35.0,
     pop_m_peak_sigma: float = 5.0,
     pop_m_peak_frac: float = 0.1,
+    galaxy_z_edges: np.ndarray | None = None,
+    galaxy_z_density: np.ndarray | None = None,
     inj_mass_pdf_coords: Literal["m1m2", "m1q"] = "m1m2",
     inj_sampling_pdf_dist: Literal["z", "dL", "log_dL"] = "z",
     inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source",
@@ -1424,6 +1448,8 @@ def compute_alpha_h0_grid_pdet_marginalized(
         pop_m_peak_sigma=pop_m_peak_sigma,
         pop_m_peak_frac=pop_m_peak_frac,
         z_max=z_max,
+        galaxy_z_edges=galaxy_z_edges,
+        galaxy_z_density=galaxy_z_density,
         inj_mass_pdf_coords=inj_mass_pdf_coords,
         inj_sampling_pdf_dist=inj_sampling_pdf_dist,
         inj_sampling_pdf_mass_frame=inj_sampling_pdf_mass_frame,
@@ -1566,6 +1592,8 @@ def compute_alpha_h0_grid_pdet_marginalized(
         "weight_mode": str(weight_mode),
         "pop_z_mode": str(pop_z_mode),
         "pop_z_k": float(pop_z_powerlaw_k),
+        "galaxy_z_hist_nbins": int(np.asarray(galaxy_z_density).size) if pop_z_mode == "galaxy_hist" and galaxy_z_density is not None else None,
+        "galaxy_z_hist_zmax": float(np.asarray(galaxy_z_edges)[-1]) if pop_z_mode == "galaxy_hist" and galaxy_z_edges is not None else None,
         "pop_mass_mode": str(pop_mass_mode),
         "inj_mass_pdf_coords": str(inj_mass_pdf_coords),
         "inj_sampling_pdf_dist": str(inj_sampling_pdf_dist),
@@ -1614,7 +1642,7 @@ def compute_gr_h0_posterior_grid(
     snr_binned_nbins: int,
     mchirp_binned_nbins: int = 20,
     weight_mode: Literal["none", "inv_sampling_pdf"],
-    pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw"],
+    pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw", "galaxy_hist"],
     pop_z_powerlaw_k: float,
     pop_mass_mode: Literal["none", "powerlaw_q", "powerlaw_q_smooth", "powerlaw_peak_q_smooth"],
     pop_m1_alpha: float,
@@ -1625,6 +1653,8 @@ def compute_gr_h0_posterior_grid(
     pop_m_peak: float = 35.0,
     pop_m_peak_sigma: float = 5.0,
     pop_m_peak_frac: float = 0.1,
+    galaxy_z_edges: np.ndarray | None = None,
+    galaxy_z_density: np.ndarray | None = None,
     inj_mass_pdf_coords: Literal["m1m2", "m1q"] = "m1m2",
     inj_sampling_pdf_dist: Literal["z", "dL", "log_dL"] = "z",
     inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source",
@@ -1894,6 +1924,8 @@ def compute_gr_h0_posterior_grid(
             pop_m_peak=float(pop_m_peak),
             pop_m_peak_sigma=float(pop_m_peak_sigma),
             pop_m_peak_frac=float(pop_m_peak_frac),
+            galaxy_z_edges=galaxy_z_edges,
+            galaxy_z_density=galaxy_z_density,
             inj_mass_pdf_coords=inj_mass_pdf_coords,
             inj_sampling_pdf_dist=inj_sampling_pdf_dist,
             inj_sampling_pdf_mass_frame=inj_sampling_pdf_mass_frame,
