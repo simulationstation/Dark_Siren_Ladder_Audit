@@ -148,6 +148,8 @@ class InjectionRecoveryConfig:
     # where p_pop/π_PE weights can become heavy-tailed and degrade Monte Carlo stability.
     importance_smoothing: Literal["none", "truncate", "psis"] = "none"
     importance_truncate_tau: float | None = None
+    # Optional delta-method correction for the finite-sample Jensen bias of log(mean(w)).
+    mc_logZ_bias_correction: bool = False
 
 
 def infer_z_max_for_h0_grid_closed_loop(
@@ -936,6 +938,7 @@ def run_injection_recovery_gr_h0(
         pop_z_include_h0_volume_scaling=bool(cfg.pop_z_include_h0_volume_scaling),
         importance_smoothing=str(cfg.importance_smoothing),  # type: ignore[arg-type]
         importance_truncate_tau=cfg.importance_truncate_tau,
+        mc_logZ_bias_correction=bool(cfg.mc_logZ_bias_correction),
         injections=None,
         ifar_threshold_yr=float(cfg.selection_ifar_thresh_yr),
         det_model=str(cfg.det_model),  # type: ignore[arg-type]

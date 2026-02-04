@@ -138,6 +138,12 @@ def main() -> int:
     ap.add_argument("--event-min-ess", type=float, default=0.0)
     ap.add_argument("--importance-smoothing", choices=["none", "truncate", "psis"], default="none")
     ap.add_argument("--importance-truncate-tau", type=float, default=None)
+    ap.add_argument(
+        "--mc-logz-bias-correction",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Apply a delta-method correction for finite-sample bias in log(mean(w)) using ESS (default False).",
+    )
 
     ap.add_argument("--smoke", action="store_true", help="Tiny run: n_reps<=3, n_events<=8, smaller grids/samples.")
     args = ap.parse_args()
@@ -205,6 +211,7 @@ def main() -> int:
         event_min_ess=float(args.event_min_ess),
         importance_smoothing=str(args.importance_smoothing),  # type: ignore[arg-type]
         importance_truncate_tau=float(args.importance_truncate_tau) if args.importance_truncate_tau is not None else None,
+        mc_logZ_bias_correction=bool(args.mc_logz_bias_correction),
     )
 
     manifest = {

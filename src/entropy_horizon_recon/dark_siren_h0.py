@@ -2193,6 +2193,7 @@ def _event_logL_h0_grid_from_hierarchical_pe_samples(
     pop_m_peak_frac: float,
     importance_smoothing: Literal["none", "truncate", "psis"] = "none",
     importance_truncate_tau: float | None = None,
+    mc_logZ_bias_correction: bool = False,
     return_diagnostics: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | np.ndarray:
     """Compute per-event hierarchical PE log-likelihood on an H0 grid (GR distances).
@@ -2366,6 +2367,19 @@ def _event_logL_h0_grid_from_hierarchical_pe_samples(
         log_sum = float(logsumexp(sm.logw))
         logL[j] = float(log_sum - np.log(float(n_samp)))
         ess[j] = float(sm.ess_smooth)
+        if bool(mc_logZ_bias_correction):
+            # Delta-method correction for the Jensen bias of log(mean(w)) under finite samples:
+            #   E[log(mean(w))] ≈ log(Z) - Var(w)/(2 n Z^2).
+            # With Ẑ=mean(w), estimate log(Z) ≈ log(Ẑ) + Var(w)/(2 n Ẑ^2).
+            #
+            # Using ESS = (sum w)^2 / sum(w^2), we have Var(w)/Ẑ^2 = (n/ESS) - 1, so:
+            #   correction = ((n/ESS) - 1) / (2n).
+            ess_eff = float(sm.ess_smooth)
+            if np.isfinite(ess_eff) and ess_eff > 0.0:
+                n = float(n_samp)
+                ratio = n / ess_eff
+                if np.isfinite(ratio) and ratio > 1.0:
+                    logL[j] = float(logL[j] + (ratio - 1.0) / (2.0 * n))
 
     if return_diagnostics:
         return logL, ess, n_good
@@ -2424,6 +2438,7 @@ def _hier_gr_h0_terms_worker(ev: str) -> dict[str, Any]:
         "pop_z_include_h0_volume_scaling": bool(s["pop_z_include_h0_volume_scaling"]),
         "importance_smoothing": str(s["importance_smoothing"]),
         "importance_truncate_tau": float(s["importance_truncate_tau"]) if s["importance_truncate_tau"] is not None else None,
+        "mc_logZ_bias_correction": bool(s.get("mc_logZ_bias_correction", False)),
         "pdet_model": s["pdet_model_meta"] if bool(s["include_pdet_in_event_term"]) else None,
     }
 
@@ -2476,6 +2491,7 @@ def _hier_gr_h0_terms_worker(ev: str) -> dict[str, Any]:
         pop_m_peak_frac=float(s["pop_m_peak_frac"]),
         importance_smoothing=str(s["importance_smoothing"]),  # type: ignore[arg-type]
         importance_truncate_tau=float(s["importance_truncate_tau"]) if s["importance_truncate_tau"] is not None else None,
+        mc_logZ_bias_correction=bool(s.get("mc_logZ_bias_correction", False)),
         return_diagnostics=True,
     )
     assert isinstance(out, tuple)
@@ -2539,6 +2555,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
     inj_sampling_pdf_mass_scale: Literal["linear", "log"] = "linear",
     importance_smoothing: Literal["none", "truncate", "psis"] = "none",
     importance_truncate_tau: float | None = None,
+    mc_logZ_bias_correction: bool = False,
     event_qc_mode: Literal["fail", "skip"] = "skip",
     event_min_finite_frac: float = 0.0,
     event_min_ess: float = 0.0,
@@ -2669,6 +2686,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
             "pop_m_peak_frac": float(pop_m_peak_frac),
             "importance_smoothing": str(importance_smoothing),
             "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
+            "mc_logZ_bias_correction": bool(mc_logZ_bias_correction),
         }
 
         try:
@@ -2754,6 +2772,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
                     "pop_z_include_h0_volume_scaling": bool(pop_z_include_h0_volume_scaling),
                     "importance_smoothing": str(importance_smoothing),
                     "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
+                    "mc_logZ_bias_correction": bool(mc_logZ_bias_correction),
                     "logL_H0": [float(x) for x in logL_ev.tolist()],
                     "ess_min": ess_min,
                     "n_good_min": float(np.nanmin(n_good_ev_arr)) if n_good_ev_arr is not None and n_good_ev_arr.size else float("nan"),
@@ -2789,6 +2808,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
                 "pop_z_include_h0_volume_scaling": bool(pop_z_include_h0_volume_scaling),
                 "importance_smoothing": str(importance_smoothing),
                 "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
+                "mc_logZ_bias_correction": bool(mc_logZ_bias_correction),
                 "pdet_model": pdet_model_meta,
             }
 
@@ -2839,6 +2859,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
                     pop_m_peak_frac=float(pop_m_peak_frac),
                     importance_smoothing=importance_smoothing,
                     importance_truncate_tau=importance_truncate_tau,
+                    mc_logZ_bias_correction=bool(mc_logZ_bias_correction),
                     return_diagnostics=True,
                 )
                 assert isinstance(out, tuple)
@@ -2918,6 +2939,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
                     "pop_z_include_h0_volume_scaling": bool(pop_z_include_h0_volume_scaling),
                     "importance_smoothing": str(importance_smoothing),
                     "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
+                    "mc_logZ_bias_correction": bool(mc_logZ_bias_correction),
                     "logL_H0": [float(x) for x in np.asarray(logL_ev, dtype=float).tolist()],
                     "ess_min": ess_min,
                     "n_good_min": float(np.nanmin(np.asarray(n_good_ev, dtype=float)))
@@ -3027,6 +3049,7 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
         "selection_include_h0_volume_scaling": bool(selection_include_h0_volume_scaling),
         "importance_smoothing": str(importance_smoothing),
         "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,
+        "mc_logZ_bias_correction": bool(mc_logZ_bias_correction),
         "pdet_model": {
             "det_model": str(det_model_obj.det_model) if det_model_obj is not None else None,
             "snr_threshold": float(det_model_obj.snr_threshold) if det_model_obj is not None and det_model_obj.snr_threshold is not None else None,

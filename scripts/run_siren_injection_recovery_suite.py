@@ -389,6 +389,12 @@ def main() -> int:
         default=None,
         help="Truncation tau for --importance-smoothing=truncate (default sqrt(n)).",
     )
+    ap.add_argument(
+        "--mc-logz-bias-correction",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Apply a delta-method correction for finite-sample bias in log(mean(w)) using ESS (default False).",
+    )
 
     ap.add_argument(
         "--n-proc",
@@ -497,6 +503,7 @@ def main() -> int:
         event_min_ess=float(args.event_min_ess),
         importance_smoothing=str(args.importance_smoothing),  # type: ignore[arg-type]
         importance_truncate_tau=float(args.importance_truncate_tau) if args.importance_truncate_tau is not None else None,
+        mc_logZ_bias_correction=bool(args.mc_logz_bias_correction),
     )
 
     manifest = {
