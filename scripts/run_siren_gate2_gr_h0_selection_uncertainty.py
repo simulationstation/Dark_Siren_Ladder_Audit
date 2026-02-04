@@ -260,7 +260,7 @@ def main() -> int:
     plt.plot(H0_grid, np.exp(loga50), "-", lw=1.6, label="median alpha(H0)")
     plt.yscale("log")
     plt.xlabel(r"$H_0$ [km/s/Mpc]")
-    plt.ylabel(r"$\\alpha(H_0)$")
+    plt.ylabel(r"$\alpha(H_0)$")
     plt.title("Selection alpha uncertainty from p_det bin/cell Beta draws")
     plt.legend(frameon=False, fontsize=8)
     plt.tight_layout()
