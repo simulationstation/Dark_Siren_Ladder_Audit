@@ -1331,6 +1331,11 @@ def main() -> int:
     ap.add_argument("--gr-h0-prior", choices=["uniform"], default="uniform", help="Prior on H0 for the GR baseline grid (default uniform).")
     ap.add_argument("--gr-h0-smoke", action="store_true", help="Tiny GR H0 smoke mode (shrinks grid and event count for a seconds-scale check).")
     ap.add_argument(
+        "--gr-h0-selection-include-h0-volume-scaling",
+        action="store_true",
+        help="Include an H0^{-3} volume-scaling factor in the GR H0 selection normalization term (audit/debug knob).",
+    )
+    ap.add_argument(
         "--gr-h0-pdet-marginalize",
         action="store_true",
         help=(
@@ -2772,6 +2777,7 @@ def main() -> int:
             inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),
             inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),
             inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),
+            selection_include_h0_volume_scaling=bool(args.gr_h0_selection_include_h0_volume_scaling),
             prior=str(args.gr_h0_prior),
             gw_distance_prior=_gw_prior_for_args(args, gw_path0),
         )
@@ -2833,6 +2839,8 @@ def main() -> int:
 
                     # Marginalize: p(H0) ∝ E_draw[ exp( logL_events(H0) - N log alpha_draw(H0) ) ].
                     log_alpha = np.log(np.clip(alpha_draws, 1e-300, np.inf))  # (n_draws, n_H0)
+                    if bool(args.gr_h0_selection_include_h0_volume_scaling):
+                        log_alpha = log_alpha - 3.0 * np.log(np.clip(H0g.reshape((1, -1)), 1e-12, np.inf))
                     logL_draws = logL_events.reshape((1, -1)) - float(n_events_eff) * log_alpha
                     m = np.max(logL_draws, axis=0, keepdims=True)
                     logL_marg = (m + np.log(np.mean(np.exp(logL_draws - m), axis=0, keepdims=True))).reshape((-1,))
@@ -2860,6 +2868,7 @@ def main() -> int:
                         "selection_z_max": float(z_sel),
                         "selection_det_model": str(args.selection_det_model),
                         "selection_weight_mode": str(args.selection_weight_mode),
+                        "selection_include_h0_volume_scaling": bool(args.gr_h0_selection_include_h0_volume_scaling),
                         "selection_pop_z_mode": str(args.selection_pop_z_mode),
                         "selection_pop_z_k": float(args.selection_pop_z_k),
                         "selection_pop_mass_mode": str(args.selection_pop_mass_mode),

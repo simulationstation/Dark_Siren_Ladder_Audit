@@ -1629,6 +1629,7 @@ def compute_gr_h0_posterior_grid(
     inj_sampling_pdf_dist: Literal["z", "dL", "log_dL"] = "z",
     inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source",
     inj_sampling_pdf_mass_scale: Literal["linear", "log"] = "linear",
+    selection_include_h0_volume_scaling: bool = False,
     prior: str = "uniform",
     gw_distance_prior: GWDistancePrior | None = None,
 ) -> dict[str, Any]:
@@ -1899,7 +1900,11 @@ def compute_gr_h0_posterior_grid(
             inj_sampling_pdf_mass_scale=inj_sampling_pdf_mass_scale,
         )
         alpha_grid = np.asarray(alpha, dtype=float)
-        logL_total = logL_total - float(len(events)) * np.log(np.clip(alpha, 1e-300, np.inf))
+        log_alpha_grid = np.log(np.clip(alpha_grid, 1e-300, np.inf))
+        if bool(selection_include_h0_volume_scaling):
+            # Optional xi-style normalization: include the (c/H0)^3 scaling (dropping constant c^3).
+            log_alpha_grid = log_alpha_grid - 3.0 * np.log(np.clip(H0_grid, 1e-12, np.inf))
+        logL_total = logL_total - float(len(events)) * log_alpha_grid
 
     # Uniform prior in H0 => constant in log space (drops out).
     log_post = logL_total - float(np.max(logL_total))
@@ -1946,6 +1951,7 @@ def compute_gr_h0_posterior_grid(
         "selection_alpha": alpha_meta,
         "selection_alpha_grid": [float(x) for x in alpha_grid.tolist()] if alpha_grid is not None else None,
         "selection_ifar_threshold_yr": float(ifar_threshold_yr),
+        "selection_include_h0_volume_scaling": bool(selection_include_h0_volume_scaling),
         "gw_distance_prior": gw_distance_prior.to_jsonable(),
     }
 
