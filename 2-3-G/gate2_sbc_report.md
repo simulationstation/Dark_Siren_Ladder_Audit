@@ -119,3 +119,33 @@ Since the sampling‑pdf convention isn’t the root cause, the remaining likely
 
 Concrete immediate work item:
 - extend the suite aggregate + figures to report both `u_h0_off_*` (selection‑off) and `u_h0_on_*` so we can localize the miscalibration to the event term or the selection term (**done**: `scripts/run_siren_injection_recovery_suite.py` now writes `u_h0_off_*` to `tables/suite_aggregate.json` and plots `figures/sbc_u_h0_off_{cdf,hist}.png`).
+
+## Population ablation (z vs mass) — what actually drives the non‑uniformity
+
+We ran a small 32‑replicate ablation sweep holding the rest of the Gate‑2 control fixed (same injection file, same H0 grid, same detection proxy, same PE synthesis settings) while toggling **which population assumptions are enabled**:
+
+- Output bundle: `outputs/gate2_sbc_ablation_popweights_20260204_053915UTC`
+- 32 replicates × 25 events/replicate, \(H_0\in[40,100]\) (121 grid points), `det_model=snr_mchirp_binned`
+
+Selection‑ON SBC metrics:
+
+| case | pop_z_mode | pop_mass_mode | u_h0_on_mean | u_h0_on_ks |
+|---|---|---|---:|---:|
+| popNone | none | none | 0.449 | 0.164 |
+| zOnly | comoving_uniform | none | 0.385 | 0.275 |
+| mOnly | none | powerlaw_peak_q_smooth | 0.255 | 0.368 |
+| popZmass | comoving_uniform | powerlaw_peak_q_smooth | 0.332 | 0.337 |
+
+Conclusion:
+- The **mass population conditioning** is the dominant source of the Gate‑2 SBC failure: turning on `pop_mass_mode` is what makes \(u\) collapse toward 0 (posterior pushed **high** relative to truth).
+- The redshift prior (`pop_z_mode`) also matters, but its impact is smaller than the mass term in this control.
+
+### Follow‑up checks on the “mass” culprit
+
+1) **Injection mass-coordinate convention** (`inj_mass_pdf_coords`) does not rescue calibration.
+   - Output bundle: `outputs/gate2_sbc_ablation_injmasscoords_20260204_054145UTC`
+   - Switching `m1m2 → m1q` does not improve `u_h0_on_*` in mass-enabled cases (often slightly worse).
+
+2) **Importance-weight smoothing** (`importance_smoothing=truncate`) does not change the result.
+   - Output bundle: `outputs/gate2_sbc_ablation_smoothing_20260204_054359UTC`
+   - `truncate` vs `none` gives identical `u_h0_on_*` in the tested cases, suggesting this is not a simple heavy-tail/ESS stabilization issue.
