@@ -78,28 +78,32 @@ That is consistent with the project’s central thesis: in spectral-only dark-si
 
 ### Follow‑up: was `sampling_pdf` convention the culprit?
 
-We implemented a “convention adapter” for the injection `sampling_pdf` interpretation and tested whether a missing Jacobian is responsible for the SBC failure when population weights are ON.
+We implemented a “convention adapter” for the injection `sampling_pdf` interpretation and tested whether missing Jacobians / wrong coordinate measures are a major driver of the Gate‑2 SBC failure when population weights are ON.
 
 Code changes (defaults preserve current behavior):
-- `inj_sampling_pdf_dist ∈ {z, dL}`: treat `sampling_pdf` as a density in z (default) or luminosity distance (apply a `1/(dL/dz)` Jacobian).
-- `inj_sampling_pdf_mass_frame ∈ {source, detector}`: treat `sampling_pdf` as a density in source-frame masses (default) or detector-frame masses (apply a `1/(1+z)^k` Jacobian with `k` depending on mass coordinates).
+- `inj_sampling_pdf_dist ∈ {z, dL, log_dL}`: treat `sampling_pdf` as a density in z (default), luminosity distance, or log-luminosity-distance (apply the corresponding `dL/dz` + `1/dL` Jacobians).
+- `inj_sampling_pdf_mass_frame ∈ {source, detector}`: treat `sampling_pdf` as a density in source-frame masses (default) or detector-frame masses.
+- `inj_sampling_pdf_mass_scale ∈ {linear, log}`: treat `sampling_pdf` as a density in linear masses (default) or in log-mass coordinates.
 
-We ran a **4‑way matrix** at fixed settings (`pop_z_mode=comoving_uniform`, `pop_mass_mode=powerlaw_peak_q_smooth`, `det_model=snr_mchirp_binned`, `weight_mode=inv_sampling_pdf`):
-- Output dir: `outputs/gate2_sbc_matrix_20260204_043303UTC`
-- 32 replicates × 25 events/replicate, \(H_0\in[40,100]\) (121 grid points), `z_max=0.62`
+We ran a **12‑way sweep** at fixed settings (`pop_z_mode=comoving_uniform`, `pop_mass_mode=powerlaw_peak_q_smooth`, `det_model=snr_mchirp_binned`, `weight_mode=inv_sampling_pdf`):
+- Output dir: `outputs/gate2_injpdf_sweep_20260204_074041UTC`
+- Screening: 16 replicates × 25 events/replicate, \(H_0\in[40,100]\) (121 grid points), `z_max=0.62`, `pe_n_samples=2000`
+- Confirm: 256 replicates × 25 events/replicate, \(H_0\in[40,100]\) (121 grid points), `z_max=0.62`, `pe_n_samples=4000`
 
-Aggregate SBC metrics (lower KS statistic is better; Uniform would have mean ~0.5 and small KS):
+Aggregate SBC metrics (selection‑ON; lower KS statistic is better; Uniform would have mean ~0.5 and small KS):
 
-| label | inj_sampling_pdf_dist | inj_sampling_pdf_mass_frame | u_h0_on_mean | u_h0_on_ks |
-|---|---|---|---:|---:|
-| A (default) | z | source | 0.34696 | 0.25702 |
-| B | dL | source | 0.30871 | 0.31860 |
-| C | z | detector | 0.21804 | 0.46242 |
-| D | dL | detector | 0.20795 | 0.43914 |
+| config | inj_sampling_pdf_dist | inj_sampling_pdf_mass_frame | inj_sampling_pdf_mass_scale | u_h0_on_mean | u_h0_on_ks |
+|---|---|---|---|---:|---:|
+| default | z | source | linear | 0.3589 | 0.1919 |
+| best (confirm) | log_dL | detector | linear | 0.4356 | 0.1085 |
+| (worse) | dL | source | linear | 0.2855 | 0.3258 |
 
 Conclusion:
-- The “missing Jacobian / wrong sampling_pdf coordinates” hypothesis **does not fix** Gate‑2 SBC under population weighting.
-- In this proxy, the injection file is **most consistent with** `sampling_pdf` already being in **(z, source-frame masses)** (because alternative interpretations make SBC worse).
+- `sampling_pdf` convention **does matter** for the calibrated *injection-recovery* Gate‑2 SBC diagnostic; the `log_dL`+`detector`+`linear` adapter improves the SBC uniformity substantially in this configuration.
+- However it **does not “solve Gate‑2”** by itself (the suite still shows noticeable deviations from Uniform under mass+z population conditioning).
+- On *real data* Gate‑2 (spectral-only control), switching the injection convention changes the inferred `alpha(H0)` curve but does **not** materially change the posterior in the current configuration:
+  - new run: `outputs/gate2_realdata_injpdf_logdL_det_20260204_075347UTC/json/gr_h0_selection_on_inv_sampling_pdf.json`
+  - baseline (defaults): `outputs/gate2_realdata_fixedzmax_20260203_190502UTC/fixed_wide/json/gr_h0_selection_on_inv_sampling_pdf.json`
 
 ### Weight‑mode sanity check
 
@@ -111,7 +115,7 @@ So `weight_mode=inv_sampling_pdf` is required for any serious selection-correcte
 
 ## Updated next step (what to debug now)
 
-Since the sampling‑pdf convention isn’t the root cause, the remaining likely sources of Gate‑2 “feels broken” behavior are:
+Since the `sampling_pdf` convention alone doesn’t fix the mass+z SBC failures (and doesn’t move the current real‑data posterior), the remaining likely sources of Gate‑2 “feels broken” behavior are:
 
 - **Selection vs population bookkeeping**: whether an \(H_0^{-3}\) “volume scaling” factor is applied consistently (or double-counted / omitted) between the z prior and the selection term.
 - **Event-term vs selection-term mismatch**: SBC should be decomposed into “selection‑off” vs “selection‑on” (logL_data vs logL_total) to see which part induces bias.
