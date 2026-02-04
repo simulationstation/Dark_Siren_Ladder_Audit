@@ -3,455 +3,169 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
-from dataclasses import replace
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    import matplotlib
-
-    matplotlib.use("Agg")  # headless safe
-    import matplotlib.pyplot as plt
-
-    _HAVE_MPL = True
-except Exception:  # pragma: no cover
-    plt = None  # type: ignore[assignment]
-    _HAVE_MPL = False
 import numpy as np
 
 from entropy_horizon_recon.siren_injection_recovery import (
     InjectionRecoveryConfig,
     compute_selection_alpha_h0_grid_for_cfg,
-    infer_z_max_for_h0_grid_closed_loop,
     load_injections_for_recovery,
     run_injection_recovery_gr_h0,
 )
-
-# Global state for multiprocessing workers (avoid pickling large arrays per task).
-_G_INJECTIONS = None
-_G_CFG = None
-_G_N_EVENTS = None
-_G_H0_GRID = None
-_G_ALPHA_GRID = None
-_G_ALPHA_META = None
-_G_JSON_DIR = None
-_G_H0_TRUE_MODE = None
-_G_H0_TRUE_FIXED = None
-_G_H0_TRUE_UNIFORM_MIN = None
-_G_H0_TRUE_UNIFORM_MAX = None
-
-
-def _sample_h0_true(*, seed: int) -> float:
-    global _G_H0_TRUE_MODE, _G_H0_TRUE_FIXED, _G_H0_TRUE_UNIFORM_MIN, _G_H0_TRUE_UNIFORM_MAX  # noqa: PLW0603
-    if _G_H0_TRUE_MODE is None or _G_H0_TRUE_FIXED is None:
-        raise RuntimeError("Worker globals not initialized (H0 truth sampling).")
-    mode = str(_G_H0_TRUE_MODE)
-    if mode == "fixed":
-        return float(_G_H0_TRUE_FIXED)
-    if mode == "uniform":
-        if _G_H0_TRUE_UNIFORM_MIN is None or _G_H0_TRUE_UNIFORM_MAX is None:
-            raise RuntimeError("Worker globals not initialized (uniform H0 truth bounds).")
-        lo = float(_G_H0_TRUE_UNIFORM_MIN)
-        hi = float(_G_H0_TRUE_UNIFORM_MAX)
-        if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
-            raise ValueError("Invalid uniform H0 truth bounds.")
-        rng = np.random.default_rng(int(seed) + 1_000_003)
-        return float(rng.uniform(lo, hi))
-    raise ValueError(f"Unsupported h0_true_mode: {mode}")
-
-
-def _run_rep_worker(rep: int, seed: int) -> dict[str, Any]:
-    global _G_INJECTIONS, _G_CFG, _G_N_EVENTS, _G_H0_GRID, _G_ALPHA_GRID, _G_ALPHA_META, _G_JSON_DIR  # noqa: PLW0603
-    if _G_INJECTIONS is None or _G_CFG is None or _G_N_EVENTS is None or _G_H0_GRID is None or _G_ALPHA_GRID is None or _G_JSON_DIR is None:
-        raise RuntimeError("Worker globals not initialized.")
-    rep_path = Path(_G_JSON_DIR) / f"rep_{int(rep):04d}.json"
-    if rep_path.exists():
-        return {"rep": int(rep), "seed": int(seed), "skipped": True}
-
-    h0_true = _sample_h0_true(seed=int(seed))
-    cfg = replace(_G_CFG, h0_true=float(h0_true))
-    out = run_injection_recovery_gr_h0(
-        injections=_G_INJECTIONS,
-        cfg=cfg,
-        n_events=int(_G_N_EVENTS),
-        h0_grid=_G_H0_GRID,
-        seed=int(seed),
-        selection_alpha_h0_grid=_G_ALPHA_GRID,
-        selection_alpha_meta=_G_ALPHA_META,
-        out_dir=None,
-    )
-
-    tmp = rep_path.with_suffix(".json.tmp")
-    _write_json(tmp, out)
-    tmp.replace(rep_path)
-
-    s = out.get("summary", {})
-    return {
-        "rep": int(rep),
-        "seed": int(seed),
-        "h0_true": float(h0_true),
-        "used_on": int(s.get("n_events_used_selection_on", -1)),
-        "p50_on": _safe_float(s.get("selection_on", {}).get("summary", {}).get("p50")),
-        "bias_p50_on": _safe_float(s.get("bias_p50_selection_on")),
-        "skipped": False,
-    }
 
 
 def _utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SUTC")
 
 
-def _safe_float(x: Any) -> float:
-    try:
-        return float(x)
-    except Exception:
-        return float("nan")
-
-
 def _write_json(path: Path, obj: Any) -> None:
     path.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n")
 
 
-def _available_cpu_count() -> int:
-    """Best-effort available CPU count (respects taskset/affinity when present)."""
-    try:
-        return len(os.sched_getaffinity(0))  # type: ignore[attr-defined]
-    except Exception:
-        return int(os.cpu_count() or 1)
+def _posterior_from_logL_rel(H0_grid: np.ndarray, logL_rel: np.ndarray) -> dict[str, Any]:
+    H0_grid = np.asarray(H0_grid, dtype=float)
+    logL_rel = np.asarray(logL_rel, dtype=float)
+    if H0_grid.shape != logL_rel.shape:
+        raise ValueError("H0_grid and logL_rel must have the same shape.")
 
+    m = np.isfinite(logL_rel)
+    if not np.any(m):
+        raise ValueError("logL_rel has no finite entries.")
 
-def _load_summary_from_rep(rep_path: Path) -> dict[str, Any]:
-    d = json.loads(rep_path.read_text())
-    s = dict(d.get("summary", {}))
-    h0_true = _safe_float(s.get("h0_true"))
+    log_post = logL_rel - float(np.nanmax(logL_rel[m]))
+    p = np.exp(np.clip(log_post, -700.0, 50.0))
+    p = np.where(m, p, 0.0)
+    s = float(np.sum(p))
+    if not (np.isfinite(s) and s > 0.0):
+        raise ValueError("Posterior normalization failed.")
+    p = p / s
 
-    def _q_from_grid(grid: list[float], posterior: list[float], q: float) -> float:
-        g = np.asarray(grid, dtype=float)
-        p = np.asarray(posterior, dtype=float)
-        if g.ndim != 1 or p.ndim != 1 or g.shape != p.shape or g.size < 2:
-            return float("nan")
-        p = np.where(np.isfinite(p), p, 0.0)
-        psum = float(np.sum(p))
-        if not (np.isfinite(psum) and psum > 0.0):
-            return float("nan")
-        p = p / psum
-        cdf = np.cumsum(p)
-        return float(np.interp(float(q), cdf, g))
+    cdf = np.cumsum(p)
+    q16 = float(np.interp(0.16, cdf, H0_grid))
+    q50 = float(np.interp(0.50, cdf, H0_grid))
+    q84 = float(np.interp(0.84, cdf, H0_grid))
 
-    def _fit_slope(grid: list[float], y: list[float]) -> float:
-        x = np.asarray(grid, dtype=float)
-        y = np.asarray(y, dtype=float)
-        if x.ndim != 1 or y.ndim != 1 or x.shape != y.shape or x.size < 2:
-            return float("nan")
-        m = np.isfinite(x) & np.isfinite(y)
-        if int(np.count_nonzero(m)) < 5:
-            return float("nan")
-        x = x[m]
-        y = y[m]
-        xc = x - float(np.mean(x))
-        denom = float(np.sum(xc**2))
-        if not (np.isfinite(denom) and denom > 0.0):
-            return float("nan")
-        return float(np.sum(xc * y) / denom)
-
-    def _cdf_at(grid: list[float], posterior: list[float], x: float) -> float:
-        g = np.asarray(grid, dtype=float)
-        p = np.asarray(posterior, dtype=float)
-        if g.ndim != 1 or p.ndim != 1 or g.shape != p.shape or g.size < 2:
-            return float("nan")
-        if not np.isfinite(float(x)):
-            return float("nan")
-        p = np.where(np.isfinite(p), p, 0.0)
-        psum = float(np.sum(p))
-        if not (np.isfinite(psum) and psum > 0.0):
-            return float("nan")
-        p = p / psum
-        cdf = np.cumsum(p)
-        # Interpret the discrete grid posterior as piecewise-linear CDF.
-        u = float(np.interp(float(x), g, cdf, left=0.0, right=1.0))
-        return float(np.clip(u, 0.0, 1.0))
-
-    on = dict(d.get("gr_h0_selection_on", {}))
-    off = dict(d.get("gr_h0_selection_off", {}))
-    h0_grid = on.get("H0_grid", off.get("H0_grid", []))
-
-    q025_off = _q_from_grid(h0_grid, off.get("posterior", []), 0.025)
-    q16_off = _q_from_grid(h0_grid, off.get("posterior", []), 0.16)
-    q975_off = _q_from_grid(h0_grid, off.get("posterior", []), 0.975)
-    q025_on = _q_from_grid(h0_grid, on.get("posterior", []), 0.025)
-    q16_on = _q_from_grid(h0_grid, on.get("posterior", []), 0.16)
-    q975_on = _q_from_grid(h0_grid, on.get("posterior", []), 0.975)
-    q84_off = _q_from_grid(h0_grid, off.get("posterior", []), 0.84)
-    q84_on = _q_from_grid(h0_grid, on.get("posterior", []), 0.84)
-
-    u_h0_off = _cdf_at(h0_grid, off.get("posterior", []), float(h0_true))
-    u_h0_on = _cdf_at(h0_grid, on.get("posterior", []), float(h0_true))
-
-    # Term slopes (diagnostic for monotone-in-H0 failures).
-    slope_logLsum_off = _fit_slope(h0_grid, off.get("logL_sum_events_rel", []))
-    slope_logLsum_on = _fit_slope(h0_grid, on.get("logL_sum_events_rel", []))
-    slope_log_alpha_on = _fit_slope(h0_grid, on.get("log_alpha_grid", []))
-    slope_logL_total_on = _fit_slope(h0_grid, on.get("logL_H0_rel", []))
-
-    pp = dict(s.get("pe_pp", {}))
-    pp_dL = dict(pp.get("dL", {}))
-
-    # Promote a minimal set of stable keys.
+    mean = float(np.sum(p * H0_grid))
+    sd = float(np.sqrt(np.sum(p * (H0_grid - mean) ** 2)))
+    i_map = int(np.argmax(p))
+    H0_map = float(H0_grid[i_map])
     return {
-        "rep": int(rep_path.stem.split("_")[-1]),
-        "seed": int(d.get("manifest", {}).get("seed", -1)),
-        "h0_true": float(h0_true),
-        "n_events_truth": int(s.get("n_events_truth", -1)),
-        "n_used_off": int(s.get("n_events_used_selection_off", -1)),
-        "n_used_on": int(s.get("n_events_used_selection_on", -1)),
-        "n_skipped_off": int(s.get("n_events_skipped_selection_off", -1)),
-        "n_skipped_on": int(s.get("n_events_skipped_selection_on", -1)),
-        "gate2_pass": bool(on.get("gate2_pass", False)),
-        "H0_map_at_edge_off": bool(off.get("H0_map_at_edge", False)),
-        "H0_map_at_edge_on": bool(on.get("H0_map_at_edge", False)),
-        "H0_map_off": _safe_float(s.get("selection_off", {}).get("H0_map")),
-        "H0_map_on": _safe_float(s.get("selection_on", {}).get("H0_map")),
-        "H0_p025_off": float(q025_off),
-        "H0_p16_off": float(q16_off),
-        "H0_p50_off": _safe_float(s.get("selection_off", {}).get("summary", {}).get("p50")),
-        "H0_p84_off": float(q84_off),
-        "H0_p975_off": float(q975_off),
-        "H0_p025_on": float(q025_on),
-        "H0_p16_on": float(q16_on),
-        "H0_p50_on": _safe_float(s.get("selection_on", {}).get("summary", {}).get("p50")),
-        "H0_p84_on": float(q84_on),
-        "H0_p975_on": float(q975_on),
-        "u_h0_off": float(u_h0_off),
-        "u_h0_on": float(u_h0_on),
-        "slope_logLsum_off": float(slope_logLsum_off),
-        "slope_logLsum_on": float(slope_logLsum_on),
-        "slope_log_alpha_on": float(slope_log_alpha_on),
-        "slope_logL_total_on": float(slope_logL_total_on),
-        "bias_p50_on": _safe_float(s.get("bias_p50_selection_on")),
-        "bias_map_on": _safe_float(s.get("bias_map_selection_on")),
-        "pp_dL_mean": _safe_float(pp_dL.get("mean")),
-        "pp_dL_ks": _safe_float(pp_dL.get("ks_d")),
+        "H0_map": float(H0_map),
+        "H0_map_index": int(i_map),
+        "H0_map_at_edge": bool(i_map == 0 or i_map == (H0_grid.size - 1)),
+        "summary": {"mean": mean, "sd": sd, "p50": q50, "p16": q16, "p84": q84},
     }
 
 
+def _contains_interval(lo: float, x: float, hi: float) -> bool:
+    lo = float(lo)
+    hi = float(hi)
+    x = float(x)
+    if not (np.isfinite(lo) and np.isfinite(hi) and np.isfinite(x)):
+        return False
+    if hi < lo:
+        lo, hi = hi, lo
+    return bool(lo <= x <= hi)
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Run a resumable injection-recovery suite (many reps) for the GR H0 control.")
+    ap = argparse.ArgumentParser(description="Replicate suite for injection-recovery GR H0 control (selection bookkeeping).")
+    ap.add_argument("--out", default=None, help="Output directory (default outputs/siren_injection_recovery_suite_<UTCSTAMP>).")
+
     ap.add_argument("--selection-injections-hdf", required=True, help="Path to O3 sensitivity injection file (HDF5).")
     ap.add_argument("--selection-ifar-thresh-yr", type=float, default=1.0, help="IFAR threshold (years) for injections (default 1).")
 
-    ap.add_argument("--h0-true", type=float, default=70.0, help="Truth H0 used to generate synthetic detected events (default 70).")
-    ap.add_argument(
-        "--h0-true-mode",
-        choices=["fixed", "uniform"],
-        default="fixed",
-        help="Truth H0 policy: fixed uses --h0-true; uniform samples H0_true ~ Uniform[lo,hi] (default fixed).",
-    )
-    ap.add_argument("--h0-true-uniform-min", type=float, default=None, help="Uniform H0_true lower bound (default: --h0-min).")
-    ap.add_argument("--h0-true-uniform-max", type=float, default=None, help="Uniform H0_true upper bound (default: --h0-max).")
-    ap.add_argument("--n-events", type=int, default=50, help="Synthetic detected events per replicate (default 50).")
-    ap.add_argument("--n-rep", type=int, default=32, help="Number of replicates (default 32).")
-    ap.add_argument("--seed0", type=int, default=1000, help="Base seed (default 1000).")
+    ap.add_argument("--h0-true", type=float, required=True, help="Truth H0 used to generate synthetic detected events.")
+    ap.add_argument("--n-events", type=int, default=64, help="Detected events per replicate (default 64).")
+    ap.add_argument("--n-reps", type=int, default=25, help="Number of replicates (default 25).")
+    ap.add_argument("--seed0", type=int, default=0, help="Base seed; replicate r uses seed=seed0+r (default 0).")
+    ap.add_argument("--n-proc", type=int, default=0, help="Worker processes for hierarchical inference (default 0 = all cores).")
 
-    ap.add_argument("--h0-min", type=float, default=40.0, help="Min H0 in inference grid (default 40).")
-    ap.add_argument("--h0-max", type=float, default=120.0, help="Max H0 in inference grid (default 120).")
-    ap.add_argument("--h0-n", type=int, default=161, help="Number of H0 grid points (default 161).")
-    ap.add_argument("--omega-m0", type=float, default=0.31, help="Omega_m0 for GR distances (default 0.31).")
-    ap.add_argument("--omega-k0", type=float, default=0.0, help="Omega_k0 for GR distances (default 0).")
-    ap.add_argument("--z-max", type=float, default=0.62, help="Max redshift used in inference + selection proxy (default 0.62).")
-    ap.add_argument(
-        "--z-max-mode",
-        choices=["fixed", "auto"],
-        default="fixed",
-        help="z_max policy: fixed uses --z-max; auto expands z_max to avoid support truncation (debug-only; can silently change the inference regime) (default fixed).",
-    )
-    ap.add_argument("--z-max-auto-cap", type=float, default=5.0, help="Max z used for the auto z_max inversion cache (default 5).")
-    ap.add_argument("--z-max-auto-margin", type=float, default=0.10, help="Additive safety margin on inferred z_max (default 0.10).")
+    ap.add_argument("--h0-min", type=float, default=40.0)
+    ap.add_argument("--h0-max", type=float, default=100.0)
+    ap.add_argument("--h0-n", type=int, default=121)
+    ap.add_argument("--omega-m0", type=float, default=0.31)
+    ap.add_argument("--omega-k0", type=float, default=0.0)
+    ap.add_argument("--z-max", type=float, default=0.62)
 
-    ap.add_argument(
-        "--det-model",
-        choices=["threshold", "snr_binned", "snr_mchirp_binned"],
-        default="snr_binned",
-        help="Detectability proxy model (default snr_binned).",
-    )
-    ap.add_argument("--snr-binned-nbins", type=int, default=200, help="Bins for det_model=snr_binned (default 200).")
-    ap.add_argument("--mchirp-binned-nbins", type=int, default=20, help="Chirp-mass bins for det_model=snr_mchirp_binned (default 20).")
-    ap.add_argument("--weight-mode", choices=["none", "inv_sampling_pdf"], default="inv_sampling_pdf", help="Injection weight mode (default inv_sampling_pdf).")
-    ap.add_argument(
-        "--inj-mass-pdf-coords",
-        choices=["m1m2", "m1q"],
-        default="m1m2",
-        help="Mass-coordinate convention for injection sampling_pdf (default m1m2).",
-    )
-    ap.add_argument(
-        "--inj-sampling-pdf-dist",
-        choices=["z", "dL", "log_dL"],
-        default="z",
-        help="Distance/redshift coordinate used by injection sampling_pdf: 'z' => density in z; 'dL' => density in luminosity distance (converted via dL/dz); 'log_dL' => density in log(dL) (converted via (1/dL)*(dL/dz)) (default z).",
-    )
-    ap.add_argument(
-        "--inj-sampling-pdf-mass-frame",
-        choices=["source", "detector"],
-        default="source",
-        help="Mass-frame used by injection sampling_pdf: 'source' means source-frame component masses; 'detector' means detector-frame masses and will be converted using (1+z) Jacobians (default source).",
-    )
-    ap.add_argument(
-        "--inj-sampling-pdf-mass-scale",
-        choices=["linear", "log"],
-        default="linear",
-        help="Mass coordinate scale used by injection sampling_pdf: 'linear' => density in masses; 'log' => density in log-mass coordinates (converted to linear via Jacobians) (default linear).",
-    )
-    ap.add_argument(
-        "--include-pdet-in-event-term",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Include p_det(dL) in the hierarchical PE event term (audit knob; default False).",
-    )
+    ap.add_argument("--det-model", choices=["threshold", "snr_binned", "snr_mchirp_binned"], default="snr_mchirp_binned")
+    ap.add_argument("--snr-binned-nbins", type=int, default=200)
+    ap.add_argument("--mchirp-binned-nbins", type=int, default=20)
+    ap.add_argument("--weight-mode", choices=["none", "inv_sampling_pdf"], default="inv_sampling_pdf")
+    ap.add_argument("--inj-mass-pdf-coords", choices=["m1m2", "m1q"], default="m1m2")
+    ap.add_argument("--inj-sampling-pdf-dist", choices=["z", "dL", "log_dL"], default="log_dL")
+    ap.add_argument("--inj-sampling-pdf-mass-frame", choices=["source", "detector"], default="detector")
+    ap.add_argument("--inj-sampling-pdf-mass-scale", choices=["linear", "log"], default="linear")
 
-    ap.add_argument(
-        "--selection-include-h0-volume-scaling",
-        action="store_true",
-        help="Use an xi-style normalization by including an H0^{-3} factor in the selection term (audit/debug knob).",
-    )
-
-    ap.add_argument("--pop-z-mode", choices=["none", "comoving_uniform", "comoving_powerlaw"], default="comoving_uniform", help="Population z mode (default comoving_uniform).")
-    ap.add_argument("--pop-z-k", type=float, default=0.0, help="Powerlaw k for pop_z_mode=comoving_powerlaw (default 0).")
-    ap.add_argument(
-        "--pop-z-include-h0-volume-scaling",
-        action="store_true",
-        help="Include an explicit (c/H0)^3 factor in the pop_z weight for the GR(H0) control (audit/debug knob).",
-    )
+    ap.add_argument("--include-pdet-in-event-term", action=argparse.BooleanOptionalAction, default=False)
+    ap.add_argument("--pop-z-mode", choices=["none", "comoving_uniform", "comoving_powerlaw"], default="comoving_uniform")
+    ap.add_argument("--pop-z-k", type=float, default=0.0)
+    ap.add_argument("--pop-z-include-h0-volume-scaling", action=argparse.BooleanOptionalAction, default=False)
     ap.add_argument(
         "--pop-mass-mode",
         choices=["none", "powerlaw_q", "powerlaw_q_smooth", "powerlaw_peak_q_smooth"],
         default="powerlaw_peak_q_smooth",
-        help="Population mass mode (default powerlaw_peak_q_smooth).",
     )
-    ap.add_argument("--pop-m1-alpha", type=float, default=2.3, help="Primary-mass powerlaw slope alpha (default 2.3).")
-    ap.add_argument("--pop-m-min", type=float, default=5.0, help="Min source-frame mass (default 5).")
-    ap.add_argument("--pop-m-max", type=float, default=80.0, help="Max source-frame mass (default 80).")
-    ap.add_argument("--pop-q-beta", type=float, default=0.0, help="Mass ratio powerlaw exponent beta (default 0).")
-    ap.add_argument("--pop-m-taper-delta", type=float, default=3.0, help="Smooth taper width (Msun) for smooth mass models (default 3).")
-    ap.add_argument("--pop-m-peak", type=float, default=35.0, help="Gaussian peak location in m1 (Msun) for peak mass mode (default 35).")
-    ap.add_argument("--pop-m-peak-sigma", type=float, default=5.0, help="Gaussian peak sigma in m1 (Msun) for peak mass mode (default 5).")
-    ap.add_argument("--pop-m-peak-frac", type=float, default=0.1, help="Gaussian peak mixture fraction for peak mass mode (default 0.1).")
+    ap.add_argument("--pop-m1-alpha", type=float, default=2.3)
+    ap.add_argument("--pop-m-min", type=float, default=5.0)
+    ap.add_argument("--pop-m-max", type=float, default=80.0)
+    ap.add_argument("--pop-q-beta", type=float, default=0.0)
+    ap.add_argument("--pop-m-taper-delta", type=float, default=3.0)
+    ap.add_argument("--pop-m-peak", type=float, default=35.0)
+    ap.add_argument("--pop-m-peak-sigma", type=float, default=5.0)
+    ap.add_argument("--pop-m-peak-frac", type=float, default=0.1)
 
-    ap.add_argument("--pe-n-samples", type=int, default=10_000, help="Synthetic PE samples per event (default 10000).")
-    ap.add_argument(
-        "--pe-obs-mode",
-        choices=["truth", "noisy"],
-        default="noisy",
-        help="Synthetic PE likelihood center: 'truth' or a noisy draw around truth (default noisy).",
-    )
-    ap.add_argument(
-        "--pe-synth-mode",
-        choices=["naive_gaussian", "prior_resample", "likelihood_resample"],
-        default="likelihood_resample",
-        help="Synthetic PE mode (default likelihood_resample).",
-    )
-    ap.add_argument("--pe-prior-resample-n-candidates", type=int, default=200_000, help="Candidates for prior_resample (default 200000).")
-    ap.add_argument("--pe-seed", type=int, default=0, help="Seed offset for PE synthesis (default 0).")
-    ap.add_argument("--dl-frac-sigma0", type=float, default=0.25, help="Base fractional dL scatter (default 0.25).")
-    ap.add_argument("--dl-frac-sigma-floor", type=float, default=0.05, help="Minimum fractional dL scatter under SNR scaling (default 0.05).")
-    ap.add_argument("--dl-sigma-mode", choices=["constant", "snr"], default="snr", help="Distance scatter model (default snr).")
-    ap.add_argument("--mc-frac-sigma0", type=float, default=0.02, help="Base fractional chirp-mass scatter (default 0.02).")
-    ap.add_argument("--q-sigma0", type=float, default=0.08, help="Mass-ratio scatter (default 0.08).")
+    ap.add_argument("--pe-n-samples", type=int, default=5000)
+    ap.add_argument("--pe-obs-mode", choices=["truth", "noisy"], default="noisy")
+    ap.add_argument("--pe-synth-mode", choices=["naive_gaussian", "prior_resample", "likelihood_resample"], default="likelihood_resample")
+    ap.add_argument("--pe-prior-resample-n-candidates", type=int, default=200_000)
+    ap.add_argument("--pe-seed", type=int, default=0)
+    ap.add_argument("--dl-frac-sigma0", type=float, default=0.25)
+    ap.add_argument("--dl-frac-sigma-floor", type=float, default=0.05)
+    ap.add_argument("--dl-sigma-mode", choices=["constant", "snr"], default="snr")
+    ap.add_argument("--mc-frac-sigma0", type=float, default=0.02)
+    ap.add_argument("--q-sigma0", type=float, default=0.08)
     ap.add_argument("--pe-prior-dl-expr", default="PowerLaw(alpha=2.0, minimum=1.0, maximum=20000.0)")
     ap.add_argument("--pe-prior-chirp-mass-expr", default="UniformInComponentsChirpMass(minimum=2.0, maximum=200.0)")
     ap.add_argument("--pe-prior-mass-ratio-expr", default="UniformInComponentsMassRatio(minimum=0.05, maximum=1.0)")
 
-    ap.add_argument("--event-qc-mode", choices=["fail", "skip"], default="skip", help="Event QC mode (default skip).")
-    ap.add_argument(
-        "--event-min-finite-frac",
-        type=float,
-        default=0.0,
-        help="Minimum finite-support fraction across H0 grid (default 0; disables 'insufficient support' skipping).",
-    )
+    ap.add_argument("--event-qc-mode", choices=["fail", "skip"], default="skip")
+    ap.add_argument("--event-min-finite-frac", type=float, default=0.0)
+    ap.add_argument("--importance-smoothing", choices=["none", "truncate", "psis"], default="none")
+    ap.add_argument("--importance-truncate-tau", type=float, default=None)
 
-    ap.add_argument(
-        "--importance-smoothing",
-        choices=["none", "truncate", "psis"],
-        default="none",
-        help="Importance-sampling stabilization for hierarchical PE reweighting (default none).",
-    )
-    ap.add_argument(
-        "--importance-truncate-tau",
-        type=float,
-        default=None,
-        help="Truncation tau for --importance-smoothing=truncate (default sqrt(n)).",
-    )
-
-    ap.add_argument(
-        "--n-proc",
-        type=int,
-        default=0,
-        help="Parallel worker processes for replicates (default 0=auto; capped by n_rep).",
-    )
-    ap.add_argument("--rebuild-only", action="store_true", help="Do not run new reps; rebuild tables/figures from existing rep_*.json files.")
-    ap.add_argument("--smoke", action="store_true", help="Tiny suite smoke (few reps + few events + small grid).")
-    ap.add_argument("--out", default=None, help="Output directory (default outputs/siren_injection_recovery_suite_<UTCSTAMP>).")
+    ap.add_argument("--smoke", action="store_true", help="Tiny run: n_reps<=3, n_events<=8, smaller grids/samples.")
     args = ap.parse_args()
 
     out_dir = Path(args.out) if args.out else Path("outputs") / f"siren_injection_recovery_suite_{_utc_stamp()}"
-    json_dir = out_dir / "json"
-    tab_dir = out_dir / "tables"
-    fig_dir = out_dir / "figures"
-    json_dir.mkdir(parents=True, exist_ok=True)
-    tab_dir.mkdir(parents=True, exist_ok=True)
-    if _HAVE_MPL:
-        fig_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    n_rep = int(args.n_rep)
+    n_reps = int(args.n_reps)
     n_events = int(args.n_events)
+    pe_n = int(args.pe_n_samples)
     h0_n = int(args.h0_n)
+    pe_cand = int(args.pe_prior_resample_n_candidates)
     if bool(args.smoke):
-        n_rep = min(n_rep, 3)
-        n_events = min(n_events, 10)
+        n_reps = min(n_reps, 3)
+        n_events = min(n_events, 8)
+        pe_n = min(pe_n, 2000)
         h0_n = min(h0_n, 51)
+        pe_cand = min(pe_cand, 80_000)
 
     H0_grid = np.linspace(float(args.h0_min), float(args.h0_max), int(h0_n))
-
-    h0_true_mode = str(args.h0_true_mode)
-    h0_true_fixed = float(args.h0_true)
-    if h0_true_mode == "uniform":
-        if str(args.z_max_mode) == "auto":
-            raise ValueError("h0_true_mode=uniform is not compatible with z_max_mode=auto (z_max would depend on truth). Use z_max_mode=fixed.")
-        h0_true_uniform_min = float(args.h0_true_uniform_min) if args.h0_true_uniform_min is not None else float(args.h0_min)
-        h0_true_uniform_max = float(args.h0_true_uniform_max) if args.h0_true_uniform_max is not None else float(args.h0_max)
-        if not (np.isfinite(h0_true_uniform_min) and np.isfinite(h0_true_uniform_max) and h0_true_uniform_max > h0_true_uniform_min):
-            raise ValueError("Invalid --h0-true-uniform-min/max bounds.")
-    else:
-        h0_true_uniform_min = None
-        h0_true_uniform_max = None
-
-    # Auto-expand z_max if requested: avoid QC-driven biases from partial support at high H0.
-    z_max = float(args.z_max)
-    if str(args.z_max_mode) == "auto":
-        h0_eval = float(max(float(args.h0_min), float(args.h0_max)))
-        z_req = infer_z_max_for_h0_grid_closed_loop(
-            omega_m0=float(args.omega_m0),
-            omega_k0=float(args.omega_k0),
-            z_gen_max=float(z_max),
-            h0_true=float(h0_true_fixed),
-            h0_eval=float(h0_eval),
-            z_cap=float(args.z_max_auto_cap),
-        )
-        margin = float(args.z_max_auto_margin)
-        if not (np.isfinite(margin) and margin >= 0.0):
-            raise ValueError("z_max_auto_margin must be finite and >=0.")
-        z_max = float(max(z_max, z_req + margin))
-
     cfg = InjectionRecoveryConfig(
-        h0_true=float(h0_true_fixed),
+        h0_true=float(args.h0_true),
         omega_m0=float(args.omega_m0),
         omega_k0=float(args.omega_k0),
-        z_max=float(z_max),
+        z_max=float(args.z_max),
         det_model=str(args.det_model),  # type: ignore[arg-type]
         snr_binned_nbins=int(args.snr_binned_nbins),
         mchirp_binned_nbins=int(args.mchirp_binned_nbins),
         selection_ifar_thresh_yr=float(args.selection_ifar_thresh_yr),
+        include_pdet_in_event_term=bool(args.include_pdet_in_event_term),
         pop_z_mode=str(args.pop_z_mode),  # type: ignore[arg-type]
         pop_z_k=float(args.pop_z_k),
         pop_z_include_h0_volume_scaling=bool(args.pop_z_include_h0_volume_scaling),
@@ -469,12 +183,11 @@ def main() -> int:
         inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
         inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
         inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
-        selection_include_h0_volume_scaling=bool(args.selection_include_h0_volume_scaling),
-        include_pdet_in_event_term=bool(args.include_pdet_in_event_term),
+        selection_include_h0_volume_scaling=False,
         pe_obs_mode=str(args.pe_obs_mode),  # type: ignore[arg-type]
-        pe_n_samples=int(args.pe_n_samples),
+        pe_n_samples=int(pe_n),
         pe_synth_mode=str(args.pe_synth_mode),  # type: ignore[arg-type]
-        pe_prior_resample_n_candidates=int(args.pe_prior_resample_n_candidates),
+        pe_prior_resample_n_candidates=int(pe_cand),
         pe_seed=int(args.pe_seed),
         dl_frac_sigma0=float(args.dl_frac_sigma0),
         dl_frac_sigma_floor=float(args.dl_frac_sigma_floor),
@@ -492,395 +205,152 @@ def main() -> int:
 
     manifest = {
         "created_utc": _utc_stamp(),
-        "config": cfg.__dict__,
-        "h0_true_mode": str(h0_true_mode),
-        "h0_true_fixed": float(h0_true_fixed),
-        "h0_true_uniform_min": float(h0_true_uniform_min) if h0_true_uniform_min is not None else None,
-        "h0_true_uniform_max": float(h0_true_uniform_max) if h0_true_uniform_max is not None else None,
-        "h0_grid": [float(x) for x in H0_grid.tolist()],
-        "n_rep": int(n_rep),
+        "n_reps": int(n_reps),
         "n_events": int(n_events),
-        "seed0": int(args.seed0),
+        "n_proc": int(args.n_proc),
+        "h0_grid": [float(x) for x in H0_grid.tolist()],
+        "cfg": cfg.__dict__,
     }
     _write_json(out_dir / "manifest.json", manifest)
 
     injections = load_injections_for_recovery(args.selection_injections_hdf, ifar_threshold_yr=float(args.selection_ifar_thresh_yr))
     alpha_grid, alpha_meta = compute_selection_alpha_h0_grid_for_cfg(injections=injections, cfg=cfg, h0_grid=H0_grid)
-    _write_json(out_dir / "selection_alpha.json", {"selection_alpha": alpha_meta, "selection_alpha_grid": [float(x) for x in alpha_grid.tolist()]})
+    _write_json(
+        out_dir / "alpha.json",
+        {"H0_grid": [float(x) for x in H0_grid.tolist()], "alpha_grid": [float(x) for x in np.asarray(alpha_grid, dtype=float).tolist()], "meta": alpha_meta},
+    )
 
-    if not bool(args.rebuild_only):
-        existing = sorted(json_dir.glob("rep_*.json"))
-        (out_dir / "progress.json").write_text(json.dumps({"n_done": len(existing), "n_target": int(n_rep), "updated_utc": _utc_stamp()}, indent=2, sort_keys=True) + "\n")
+    csv_path = out_dir / "run_log.csv"
+    want_header = not csv_path.exists()
+    with csv_path.open("a", newline="") as f:
+        w = csv.writer(f)
+        if want_header:
+            w.writerow(
+                [
+                    "utc",
+                    "rep",
+                    "seed",
+                    "n_events_used",
+                    "bias_p50_off",
+                    "bias_p50_on_no_vol",
+                    "bias_p50_on_vol",
+                    "bias_map_off",
+                    "bias_map_on_no_vol",
+                    "bias_map_on_vol",
+                    "cover68_off",
+                    "cover68_on_no_vol",
+                    "cover68_on_vol",
+                    "edge_off",
+                    "edge_on_no_vol",
+                    "edge_on_vol",
+                ]
+            )
 
-        todo: list[tuple[int, int]] = []
-        for r in range(int(n_rep)):
-            rep = r + 1
-            seed = int(args.seed0) + r
-            rep_path = json_dir / f"rep_{rep:04d}.json"
-            if rep_path.exists():
-                continue
-            todo.append((int(rep), int(seed)))
+        rows: list[dict[str, Any]] = []
+        for r in range(int(n_reps)):
+            seed = int(args.seed0) + int(r)
+            out = run_injection_recovery_gr_h0(
+                injections=injections,
+                cfg=cfg,
+                n_events=int(n_events),
+                h0_grid=H0_grid,
+                seed=int(seed),
+                selection_alpha_h0_grid=np.asarray(alpha_grid, dtype=float),
+                selection_alpha_meta=dict(alpha_meta),
+                n_processes=int(args.n_proc),
+                out_dir=None,
+            )
 
-        n_proc = int(args.n_proc)
-        if bool(args.smoke):
-            n_proc = min(max(n_proc, 1), 2) if n_proc > 0 else 1
-        if n_proc <= 0:
-            n_proc = int(_available_cpu_count())
-        n_proc = max(1, min(n_proc, int(n_rep)))
+            res_off = out["gr_h0_selection_off"]
+            res_on_no_vol = out["gr_h0_selection_on"]
+            H0 = np.asarray(res_off["H0_grid"], dtype=float)
+            logL_sum_rel = np.asarray(res_off["logL_sum_events_rel"], dtype=float)
+            n_used = int(res_off.get("n_events", len(out.get("truths", []))))
+            if H0.shape != logL_sum_rel.shape:
+                raise ValueError("Selection-off output missing/invalid logL_sum_events_rel.")
 
-        if not todo:
-            print(f"[note] all replicates already present ({len(existing)}/{int(n_rep)}); skipping run.", flush=True)
-        elif n_proc == 1:
-            for rep, seed in todo:
-                if h0_true_mode == "fixed":
-                    h0_true = float(h0_true_fixed)
-                else:
-                    assert h0_true_uniform_min is not None and h0_true_uniform_max is not None
-                    rng = np.random.default_rng(int(seed) + 1_000_003)
-                    h0_true = float(rng.uniform(float(h0_true_uniform_min), float(h0_true_uniform_max)))
-                cfg_rep = replace(cfg, h0_true=float(h0_true))
-                out = run_injection_recovery_gr_h0(
-                    injections=injections,
-                    cfg=cfg_rep,
-                    n_events=int(n_events),
-                    h0_grid=H0_grid,
-                    seed=int(seed),
-                    selection_alpha_h0_grid=alpha_grid,
-                    selection_alpha_meta=alpha_meta,
-                    out_dir=None,
-                )
-                rep_path = json_dir / f"rep_{rep:04d}.json"
-                _write_json(rep_path, out)
-                s = out.get("summary", {})
-                print(
-                    f"[rep {rep:04d}/{int(n_rep)}] seed={seed} h0_true={float(s.get('h0_true', float('nan'))):.3f} "
-                    f"used_on={s.get('n_events_used_selection_on')} "
-                    f"p50_on={s.get('selection_on', {}).get('summary', {}).get('p50'):.3f} "
-                    f"bias_p50_on={s.get('bias_p50_selection_on'):.3f}",
-                    flush=True,
-                )
-                done = sorted(json_dir.glob("rep_*.json"))
-                (out_dir / "progress.json").write_text(json.dumps({"n_done": len(done), "n_target": int(n_rep), "updated_utc": _utc_stamp()}, indent=2, sort_keys=True) + "\n")
-        else:
-            # Initialize globals for forked workers.
-            global _G_INJECTIONS, _G_CFG, _G_N_EVENTS, _G_H0_GRID, _G_ALPHA_GRID, _G_ALPHA_META, _G_JSON_DIR  # noqa: PLW0603
-            _G_INJECTIONS = injections
-            _G_CFG = cfg
-            _G_N_EVENTS = int(n_events)
-            _G_H0_GRID = H0_grid
-            _G_ALPHA_GRID = alpha_grid
-            _G_ALPHA_META = alpha_meta
-            _G_JSON_DIR = str(json_dir)
-            global _G_H0_TRUE_MODE, _G_H0_TRUE_FIXED, _G_H0_TRUE_UNIFORM_MIN, _G_H0_TRUE_UNIFORM_MAX  # noqa: PLW0603
-            _G_H0_TRUE_MODE = str(h0_true_mode)
-            _G_H0_TRUE_FIXED = float(h0_true_fixed)
-            _G_H0_TRUE_UNIFORM_MIN = float(h0_true_uniform_min) if h0_true_uniform_min is not None else None
-            _G_H0_TRUE_UNIFORM_MAX = float(h0_true_uniform_max) if h0_true_uniform_max is not None else None
+            log_alpha = np.log(np.clip(np.asarray(alpha_grid, dtype=float), 1e-300, np.inf))
+            if log_alpha.shape != H0.shape:
+                raise ValueError("alpha_grid shape mismatch vs H0_grid.")
 
-            done_n = int(len(existing))
-            max_workers = min(int(n_proc), int(len(todo)))
-            print(f"[suite] launching {len(todo)} reps with n_proc={max_workers} (existing={done_n})", flush=True)
-            with ProcessPoolExecutor(max_workers=max_workers) as ex:
-                futs = {ex.submit(_run_rep_worker, rep, seed): (rep, seed) for rep, seed in todo}
-                for fut in as_completed(futs):
-                    rep, seed = futs[fut]
-                    res = fut.result()
-                    done_n += 1
-                    if not bool(res.get("skipped", False)):
-                        print(
-                            f"[rep {rep:04d}/{int(n_rep)}] seed={seed} h0_true={float(res.get('h0_true', float('nan'))):.3f} "
-                            f"used_on={res.get('used_on')} "
-                            f"p50_on={float(res.get('p50_on', float('nan'))):.3f} "
-                            f"bias_p50_on={float(res.get('bias_p50_on', float('nan'))):.3f}",
-                            flush=True,
-                        )
-                    (out_dir / "progress.json").write_text(json.dumps({"n_done": done_n, "n_target": int(n_rep), "updated_utc": _utc_stamp()}, indent=2, sort_keys=True) + "\n")
+            # Alternative selection convention: include an explicit H0^{-3} factor in alpha.
+            log_alpha_vol = log_alpha - 3.0 * np.log(np.clip(H0, 1e-12, np.inf))
+            post_on_vol = _posterior_from_logL_rel(H0, logL_sum_rel - float(n_used) * log_alpha_vol)
 
-    # Build summary table from all rep files.
-    rep_paths = sorted(json_dir.glob("rep_*.json"))
-    rows = [_load_summary_from_rep(p) for p in rep_paths]
-    rows = sorted(rows, key=lambda x: int(x.get("rep", 0)))
-    if not rows:
-        raise ValueError("No rep_*.json files found; nothing to summarize.")
+            h0_true = float(cfg.h0_true)
+            s_off = res_off.get("summary") or {}
+            s_on_no_vol = (res_on_no_vol.get("summary") or {}) if isinstance(res_on_no_vol, dict) else {}
+            s_on_vol = post_on_vol.get("summary") or {}
 
-    # Aggregate P–P values across all events in all reps.
-    pp_all_dL: list[float] = []
-    for p in rep_paths:
-        try:
-            d = json.loads(p.read_text())
-        except Exception:
-            continue
-        by_ev = d.get("pe_pp_by_event", {})
-        if not isinstance(by_ev, dict):
-            continue
-        for vv in by_ev.values():
-            if not isinstance(vv, dict):
-                continue
-            u = vv.get("u_dL")
-            try:
-                u = float(u)
-            except Exception:
-                continue
-            if np.isfinite(u):
-                pp_all_dL.append(float(np.clip(u, 0.0, 1.0)))
-
-    csv_path = tab_dir / "suite_summary.csv"
-    fieldnames = list(rows[0].keys())
-    with csv_path.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        for row in rows:
-            w.writerow(row)
-
-    # Aggregate stats.
-    bias = np.asarray([_safe_float(r["bias_p50_on"]) for r in rows], dtype=float)
-    used_on = np.asarray([int(r["n_used_on"]) for r in rows], dtype=float)
-    skipped_on = np.asarray([int(r["n_skipped_on"]) for r in rows], dtype=float)
-    gate2_pass = np.asarray([bool(r.get("gate2_pass", False)) for r in rows], dtype=bool)
-    edge_on = np.asarray([bool(r.get("H0_map_at_edge_on", False)) for r in rows], dtype=bool)
-    edge_off = np.asarray([bool(r.get("H0_map_at_edge_off", False)) for r in rows], dtype=bool)
-    h0_true_arr = np.asarray([_safe_float(r.get("h0_true")) for r in rows], dtype=float)
-    p16_on = np.asarray([_safe_float(r.get("H0_p16_on")) for r in rows], dtype=float)
-    p84_on = np.asarray([_safe_float(r.get("H0_p84_on")) for r in rows], dtype=float)
-    p025_on = np.asarray([_safe_float(r.get("H0_p025_on")) for r in rows], dtype=float)
-    p975_on = np.asarray([_safe_float(r.get("H0_p975_on")) for r in rows], dtype=float)
-    cov68 = float(np.nanmean((h0_true_arr >= p16_on) & (h0_true_arr <= p84_on)))
-    cov95 = float(np.nanmean((h0_true_arr >= p025_on) & (h0_true_arr <= p975_on)))
-    pp_dL_ks = np.asarray([_safe_float(r.get("pp_dL_ks")) for r in rows], dtype=float)
-
-    slope_logLsum_off = np.asarray([_safe_float(r.get("slope_logLsum_off")) for r in rows], dtype=float)
-    slope_log_alpha_on = np.asarray([_safe_float(r.get("slope_log_alpha_on")) for r in rows], dtype=float)
-    slope_logL_total_on = np.asarray([_safe_float(r.get("slope_logL_total_on")) for r in rows], dtype=float)
-
-    u_h0_on = np.asarray([_safe_float(r.get("u_h0_on")) for r in rows], dtype=float)
-    u_h0_on = u_h0_on[np.isfinite(u_h0_on)]
-    if u_h0_on.size:
-        u_sorted = np.sort(np.clip(u_h0_on, 0.0, 1.0))
-        i = np.arange(1, u_sorted.size + 1, dtype=float)
-        d_plus = float(np.max(i / u_sorted.size - u_sorted))
-        d_minus = float(np.max(u_sorted - (i - 1.0) / u_sorted.size))
-        u_h0_on_ks = float(max(d_plus, d_minus))
-        u_h0_on_mean = float(np.mean(u_sorted))
-    else:
-        u_h0_on_ks = float("nan")
-        u_h0_on_mean = float("nan")
-
-    u_h0_off = np.asarray([_safe_float(r.get("u_h0_off")) for r in rows], dtype=float)
-    u_h0_off = u_h0_off[np.isfinite(u_h0_off)]
-    if u_h0_off.size:
-        u_sorted = np.sort(np.clip(u_h0_off, 0.0, 1.0))
-        i = np.arange(1, u_sorted.size + 1, dtype=float)
-        d_plus = float(np.max(i / u_sorted.size - u_sorted))
-        d_minus = float(np.max(u_sorted - (i - 1.0) / u_sorted.size))
-        u_h0_off_ks = float(max(d_plus, d_minus))
-        u_h0_off_mean = float(np.mean(u_sorted))
-    else:
-        u_h0_off_ks = float("nan")
-        u_h0_off_mean = float("nan")
-
-    pp_all_dL_arr = np.asarray(pp_all_dL, dtype=float)
-    if pp_all_dL_arr.size:
-        pp_all_dL_sorted = np.sort(pp_all_dL_arr)
-        i = np.arange(1, pp_all_dL_sorted.size + 1, dtype=float)
-        d_plus = float(np.max(i / pp_all_dL_sorted.size - pp_all_dL_sorted))
-        d_minus = float(np.max(pp_all_dL_sorted - (i - 1.0) / pp_all_dL_sorted.size))
-        pp_all_ks = float(max(d_plus, d_minus))
-        pp_all_mean = float(np.mean(pp_all_dL_sorted))
-    else:
-        pp_all_ks = float("nan")
-        pp_all_mean = float("nan")
-    agg = {
-        "n_rep_done": int(len(rows)),
-        "h0_true_mode": str(h0_true_mode),
-        "h0_true_fixed": float(h0_true_fixed),
-        "h0_true_uniform_min": float(h0_true_uniform_min) if h0_true_uniform_min is not None else None,
-        "h0_true_uniform_max": float(h0_true_uniform_max) if h0_true_uniform_max is not None else None,
-        "h0_true_mean": float(np.nanmean(h0_true_arr)),
-        "h0_true_sd": float(np.nanstd(h0_true_arr)),
-        "bias_p50_on_mean": float(np.nanmean(bias)),
-        "bias_p50_on_sd": float(np.nanstd(bias)),
-        "used_on_mean": float(np.nanmean(used_on)),
-        "used_on_min": int(np.nanmin(used_on)),
-        "used_on_max": int(np.nanmax(used_on)),
-        "skipped_on_mean": float(np.nanmean(skipped_on)),
-        "gate2_pass_n": int(np.sum(gate2_pass)),
-        "gate2_pass_frac": float(np.mean(gate2_pass.astype(float))),
-        "H0_map_at_edge_on_n": int(np.sum(edge_on)),
-        "H0_map_at_edge_off_n": int(np.sum(edge_off)),
-        "coverage_68_on": cov68,
-        "coverage_95_on": cov95,
-        "u_h0_off_n": int(u_h0_off.size),
-        "u_h0_off_mean": float(u_h0_off_mean),
-        "u_h0_off_ks": float(u_h0_off_ks),
-        "u_h0_on_n": int(u_h0_on.size),
-        "u_h0_on_mean": float(u_h0_on_mean),
-        "u_h0_on_ks": float(u_h0_on_ks),
-        "pp_dL_ks_mean": float(np.nanmean(pp_dL_ks)),
-        "slope_logLsum_off_mean": float(np.nanmean(slope_logLsum_off)),
-        "slope_logLsum_off_frac_pos": float(np.nanmean((slope_logLsum_off > 0.0).astype(float))),
-        "slope_log_alpha_on_mean": float(np.nanmean(slope_log_alpha_on)),
-        "slope_log_alpha_on_frac_pos": float(np.nanmean((slope_log_alpha_on > 0.0).astype(float))),
-        "slope_logL_total_on_mean": float(np.nanmean(slope_logL_total_on)),
-        "slope_logL_total_on_frac_pos": float(np.nanmean((slope_logL_total_on > 0.0).astype(float))),
-        "pp_dL_all_n": int(pp_all_dL_arr.size),
-        "pp_dL_all_mean": float(pp_all_mean),
-        "pp_dL_all_ks": float(pp_all_ks),
-        "note": "Calibration/audit diagnostic. If h0_true_mode=uniform matches the implicit uniform prior on the H0 grid, u_h0_on should be ~Uniform[0,1] (SBC-style check).",
-    }
-    _write_json(tab_dir / "suite_aggregate.json", agg)
-
-    # PASS/FAIL artifact (for audit gating / CI-style checks).
-    rep_pf: list[dict[str, Any]] = []
-    for r in rows:
-        reasons: list[str] = []
-        if int(r.get("n_skipped_on", 0)) > 0:
-            reasons.append("skipped_events_selection_on")
-        if bool(r.get("H0_map_at_edge_on", False)):
-            reasons.append("H0_map_at_edge_selection_on")
-        rep_pf.append(
-            {
-                "rep": int(r.get("rep", -1)),
-                "seed": int(r.get("seed", -1)),
-                "pass": bool(r.get("gate2_pass", False)),
-                "reasons": reasons,
-                "H0_map_on": _safe_float(r.get("H0_map_on")),
-                "bias_p50_on": _safe_float(r.get("bias_p50_on")),
+            row = {
+                "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "rep": int(r),
+                "seed": int(seed),
+                "n_events_used": int(n_used),
+                "bias_p50_off": float(s_off.get("p50", float("nan"))) - h0_true,
+                "bias_p50_on_no_vol": float(s_on_no_vol.get("p50", float("nan"))) - h0_true,
+                "bias_p50_on_vol": float(s_on_vol.get("p50", float("nan"))) - h0_true,
+                "bias_map_off": float(res_off.get("H0_map", float("nan"))) - h0_true,
+                "bias_map_on_no_vol": float(res_on_no_vol.get("H0_map", float("nan"))) - h0_true,
+                "bias_map_on_vol": float(post_on_vol.get("H0_map", float("nan"))) - h0_true,
+                "cover68_off": bool(_contains_interval(float(s_off.get("p16", float("nan"))), h0_true, float(s_off.get("p84", float("nan"))))),
+                "cover68_on_no_vol": bool(
+                    _contains_interval(float(s_on_no_vol.get("p16", float("nan"))), h0_true, float(s_on_no_vol.get("p84", float("nan"))))
+                ),
+                "cover68_on_vol": bool(_contains_interval(float(s_on_vol.get("p16", float("nan"))), h0_true, float(s_on_vol.get("p84", float("nan"))))),
+                "edge_off": bool(res_off.get("H0_map_at_edge", False)),
+                "edge_on_no_vol": bool(res_on_no_vol.get("H0_map_at_edge", False)),
+                "edge_on_vol": bool(post_on_vol.get("H0_map_at_edge", False)),
             }
-        )
+            rows.append(row)
+            w.writerow(
+                [
+                    row["utc"],
+                    row["rep"],
+                    row["seed"],
+                    row["n_events_used"],
+                    f"{row['bias_p50_off']:.6g}",
+                    f"{row['bias_p50_on_no_vol']:.6g}",
+                    f"{row['bias_p50_on_vol']:.6g}",
+                    f"{row['bias_map_off']:.6g}",
+                    f"{row['bias_map_on_no_vol']:.6g}",
+                    f"{row['bias_map_on_vol']:.6g}",
+                    int(bool(row["cover68_off"])),
+                    int(bool(row["cover68_on_no_vol"])),
+                    int(bool(row["cover68_on_vol"])),
+                    int(bool(row["edge_off"])),
+                    int(bool(row["edge_on_no_vol"])),
+                    int(bool(row["edge_on_vol"])),
+                ]
+            )
+            f.flush()
 
-    pass_fail = {
-        "criteria": {
-            "gate2_pass": "Per-rep gate2_pass from gr_h0_selection_on (currently: not at H0 grid edge AND no skipped events).",
-            "reasons": "Convenience flags; extend/override for stricter gating as needed.",
-        },
-        "summary": {
-            "n_rep": int(len(rows)),
-            "n_pass": int(np.sum([bool(x["pass"]) for x in rep_pf])),
-            "n_fail": int(np.sum([not bool(x["pass"]) for x in rep_pf])),
-            "fail_reps": [int(x["rep"]) for x in rep_pf if not bool(x["pass"])],
-        },
-        "rep": rep_pf,
-    }
-    _write_json(tab_dir / "pass_fail.json", pass_fail)
+            if (r + 1) % 1 == 0:
+                print(f"[injrec-suite] rep {r+1}/{n_reps} done (seed={seed})", flush=True)
 
-    if _HAVE_MPL:
-        assert plt is not None
-        # Figures.
-        plt.figure(figsize=(7.2, 4.0))
-        plt.hist(np.clip(bias, -100, 100), bins=30, alpha=0.85)
-        plt.axvline(0.0, color="k", lw=1.2)
-        plt.xlabel(r"bias in $H_0$ p50 (selection ON)  [$\mathrm{km/s/Mpc}$]")
-        plt.ylabel("replicate count")
-        plt.title("Injection-recovery bias distribution (selection ON)")
-        plt.tight_layout()
-        plt.savefig(fig_dir / "bias_p50_on_hist.png", dpi=160)
-        plt.close()
+        def _agg(key: str) -> dict[str, float]:
+            x = np.asarray([float(rr.get(key, float("nan"))) for rr in rows], dtype=float)
+            x = x[np.isfinite(x)]
+            if x.size == 0:
+                return {"n": 0, "mean": float("nan"), "sd": float("nan")}
+            return {"n": int(x.size), "mean": float(np.mean(x)), "sd": float(np.std(x, ddof=0))}
 
-        plt.figure(figsize=(7.2, 4.0))
-        plt.plot([r["rep"] for r in rows], [r["bias_p50_on"] for r in rows], marker="o", lw=1.2, ms=3)
-        plt.axhline(0.0, color="k", lw=1.0)
-        plt.xlabel("replicate")
-        plt.ylabel(r"bias in $H_0$ p50 (selection ON)")
-        plt.title("Injection-recovery per-replicate bias")
-        plt.tight_layout()
-        plt.savefig(fig_dir / "bias_p50_on_by_rep.png", dpi=160)
-        plt.close()
+        def _rate(key: str) -> dict[str, float]:
+            x = np.asarray([bool(rr.get(key, False)) for rr in rows], dtype=bool)
+            if x.size == 0:
+                return {"n": 0, "rate": float("nan")}
+            return {"n": int(x.size), "rate": float(np.mean(x.astype(float)))}
 
-        if pp_all_dL_arr.size:
-            # P–P diagnostic: empirical CDF vs uniform line.
-            u = np.sort(pp_all_dL_arr)
-            n_u = int(u.size)
-            plt.figure(figsize=(4.8, 4.8))
-            plt.plot(u, (np.arange(1, n_u + 1) / n_u), lw=1.8, label="empirical")
-            plt.plot([0, 1], [0, 1], color="k", lw=1.0, ls="--", label="uniform")
-            plt.xlabel("truth percentile u (dL)")
-            plt.ylabel("empirical CDF")
-            plt.title("Synthetic PE distance P–P")
-            plt.legend(frameon=False)
-            plt.tight_layout()
-            plt.savefig(fig_dir / "pp_dL_cdf.png", dpi=160)
-            plt.close()
-
-            plt.figure(figsize=(7.2, 4.0))
-            plt.hist(u, bins=20, range=(0, 1), alpha=0.85)
-            plt.xlabel("truth percentile u (dL)")
-            plt.ylabel("count")
-            plt.title("Synthetic PE distance P–P histogram")
-            plt.tight_layout()
-            plt.savefig(fig_dir / "pp_dL_hist.png", dpi=160)
-            plt.close()
-
-        if u_h0_off.size:
-            plt.figure(figsize=(4.8, 4.8))
-            u = np.sort(u_h0_off)
-            n_u = int(u.size)
-            plt.plot(u, (np.arange(1, n_u + 1) / n_u), lw=1.8, label="empirical")
-            plt.plot([0, 1], [0, 1], color="k", lw=1.0, ls="--", label="uniform")
-            plt.xlabel("u = CDF(H0_true)  (selection OFF)")
-            plt.ylabel("empirical CDF")
-            plt.title("SBC-style H0 diagnostic (selection OFF)")
-            plt.legend(frameon=False)
-            plt.tight_layout()
-            plt.savefig(fig_dir / "sbc_u_h0_off_cdf.png", dpi=160)
-            plt.close()
-
-            plt.figure(figsize=(7.2, 4.0))
-            plt.hist(np.clip(u_h0_off, 0.0, 1.0), bins=20, range=(0, 1), alpha=0.85)
-            plt.xlabel("u = CDF(H0_true)  (selection OFF)")
-            plt.ylabel("count")
-            plt.title("SBC u-histogram (selection OFF)")
-            plt.tight_layout()
-            plt.savefig(fig_dir / "sbc_u_h0_off_hist.png", dpi=160)
-            plt.close()
-
-        if u_h0_on.size:
-            plt.figure(figsize=(4.8, 4.8))
-            u = np.sort(u_h0_on)
-            n_u = int(u.size)
-            plt.plot(u, (np.arange(1, n_u + 1) / n_u), lw=1.8, label="empirical")
-            plt.plot([0, 1], [0, 1], color="k", lw=1.0, ls="--", label="uniform")
-            plt.xlabel("u = CDF(H0_true)  (selection ON)")
-            plt.ylabel("empirical CDF")
-            plt.title("SBC-style check on H0 (selection ON)")
-            plt.legend(frameon=False)
-            plt.tight_layout()
-            plt.savefig(fig_dir / "sbc_u_h0_on_cdf.png", dpi=160)
-            plt.close()
-
-            plt.figure(figsize=(7.2, 4.0))
-            plt.hist(np.clip(u_h0_on, 0.0, 1.0), bins=20, range=(0, 1), alpha=0.85)
-            plt.xlabel("u = CDF(H0_true)  (selection ON)")
-            plt.ylabel("count")
-            plt.title("SBC u-histogram (selection ON)")
-            plt.tight_layout()
-            plt.savefig(fig_dir / "sbc_u_h0_on_hist.png", dpi=160)
-            plt.close()
-
-        # Term-slope diagnostics.
-        m = np.isfinite(slope_logLsum_off) & np.isfinite(bias)
-        if np.any(m):
-            plt.figure(figsize=(7.2, 4.0))
-            plt.hist(np.clip(slope_logLsum_off[m], -2.0, 2.0), bins=40, alpha=0.85)
-            plt.axvline(0.0, color="k", lw=1.2)
-            plt.xlabel(r"slope of $\log L_\mathrm{events}(H_0)$  (selection OFF)")
-            plt.ylabel("replicate count")
-            plt.title("Event-term slope diagnostic")
-            plt.tight_layout()
-            plt.savefig(fig_dir / "slope_logLsum_off_hist.png", dpi=160)
-            plt.close()
-
-            plt.figure(figsize=(5.2, 4.8))
-            plt.scatter(slope_logLsum_off[m], bias[m], s=14, alpha=0.75)
-            plt.axhline(0.0, color="k", lw=1.0)
-            plt.axvline(0.0, color="k", lw=1.0)
-            plt.xlabel(r"slope of $\log L_\mathrm{events}(H_0)$")
-            plt.ylabel(r"bias in $H_0$ p50 (selection ON)")
-            plt.title("Bias vs event-term slope")
-            plt.tight_layout()
-            plt.savefig(fig_dir / "bias_vs_slope_logLsum_off.png", dpi=160)
-            plt.close()
-    else:
-        print("[note] matplotlib not available; skipping figures", flush=True)
+        summary = {
+            "h0_true": float(cfg.h0_true),
+            "n_reps": int(n_reps),
+            "n_events": int(n_events),
+            "bias_p50": {"off": _agg("bias_p50_off"), "on_no_vol": _agg("bias_p50_on_no_vol"), "on_vol": _agg("bias_p50_on_vol")},
+            "bias_map": {"off": _agg("bias_map_off"), "on_no_vol": _agg("bias_map_on_no_vol"), "on_vol": _agg("bias_map_on_vol")},
+            "cover68": {"off": _rate("cover68_off"), "on_no_vol": _rate("cover68_on_no_vol"), "on_vol": _rate("cover68_on_vol")},
+            "map_at_edge_rate": {"off": _rate("edge_off"), "on_no_vol": _rate("edge_on_no_vol"), "on_vol": _rate("edge_on_vol")},
+        }
+        _write_json(out_dir / "summary.json", summary)
 
     return 0
 

@@ -95,6 +95,10 @@ def main() -> int:
     ap.add_argument("--snr-binned-nbins", type=int, default=200)
     ap.add_argument("--mchirp-binned-nbins", type=int, default=20)
     ap.add_argument("--weight-mode", choices=["none", "inv_sampling_pdf"], default="inv_sampling_pdf")
+    ap.add_argument("--inj-mass-pdf-coords", choices=["m1m2", "m1q"], default="m1m2")
+    ap.add_argument("--inj-sampling-pdf-dist", choices=["z", "dL", "log_dL"], default="z")
+    ap.add_argument("--inj-sampling-pdf-mass-frame", choices=["source", "detector"], default="source")
+    ap.add_argument("--inj-sampling-pdf-mass-scale", choices=["linear", "log"], default="linear")
     ap.add_argument("--pop-z-mode", choices=["none", "comoving_uniform", "comoving_powerlaw"], default="comoving_uniform")
     ap.add_argument("--pop-z-k", type=float, default=0.0)
     ap.add_argument("--pop-mass-mode", choices=["none", "powerlaw_q", "powerlaw_q_smooth", "powerlaw_peak_q_smooth"], default="powerlaw_peak_q_smooth")
@@ -166,6 +170,10 @@ def main() -> int:
         pop_m_peak_sigma=float(args.pop_m_peak_sigma),
         pop_m_peak_frac=float(args.pop_m_peak_frac),
         weight_mode=str(args.weight_mode),  # type: ignore[arg-type]
+        inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+        inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
         pe_n_samples=int(pe_n),
         pe_synth_mode=str(args.pe_synth_mode),  # type: ignore[arg-type]
         pe_prior_resample_n_candidates=int(pe_cand),
@@ -213,10 +221,13 @@ def main() -> int:
                     event=f"PP_{i+1:05d}",
                     z=0.0,
                     dL_mpc_true=dL_true,
+                    dL_mpc_obs=float(dL_true),
                     m1_source=30.0,
                     m2_source=20.0,
                     chirp_mass_det_true=mc_true,
+                    chirp_mass_det_obs=float(mc_true),
                     mass_ratio_true=q_true,
+                    mass_ratio_obs=float(q_true),
                     snr_net_opt_fid=float(snr),
                     dL_mpc_fid=float(dL_true),
                     snr_net_opt_true=float(snr),
@@ -240,7 +251,7 @@ def main() -> int:
             mc_obs = float(truth.chirp_mass_det_true)
             q_obs = float(truth.mass_ratio_true)
 
-        like_center = replace(truth, dL_mpc_true=dL_obs, chirp_mass_det_true=mc_obs, mass_ratio_true=q_obs)
+        like_center = replace(truth, dL_mpc_obs=dL_obs, chirp_mass_det_obs=mc_obs, mass_ratio_obs=q_obs)
         pe = synthesize_pe_posterior_samples(truth=like_center, cfg=cfg, rng=rng)
 
         rows.append(
