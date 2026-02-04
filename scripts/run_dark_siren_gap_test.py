@@ -53,6 +53,7 @@ from entropy_horizon_recon.dark_sirens_hierarchical_pe import (
     load_gwtc_pe_hierarchical_samples,
 )
 from entropy_horizon_recon.dark_siren_h0 import (
+    compute_alpha_h0_grid_pdet_marginalized,
     compute_gr_h0_posterior_grid,
     compute_gr_h0_posterior_grid_hierarchical_pe,
 )
@@ -1329,6 +1330,23 @@ def main() -> int:
     ap.add_argument("--gr-h0-omega-k0", type=float, default=0.0, help="Omega_k0 used for GR H0 baseline distances (default 0).")
     ap.add_argument("--gr-h0-prior", choices=["uniform"], default="uniform", help="Prior on H0 for the GR baseline grid (default uniform).")
     ap.add_argument("--gr-h0-smoke", action="store_true", help="Tiny GR H0 smoke mode (shrinks grid and event count for a seconds-scale check).")
+    ap.add_argument(
+        "--gr-h0-pdet-marginalize",
+        action="store_true",
+        help=(
+            "Also compute a selection-uncertainty-marginalized GR H0 posterior by propagating finite-injection "
+            "uncertainty in p_det through alpha(H0). Writes gr_h0_grid_posterior_sel_marginalized.json.\n"
+            "Requires --selection-injections-hdf enabled and --selection-det-model in {snr_binned,snr_mchirp_binned}."
+        ),
+    )
+    ap.add_argument("--gr-h0-pdet-draws", type=int, default=200, help="Number of p_det draws for --gr-h0-pdet-marginalize (default 200).")
+    ap.add_argument("--gr-h0-pdet-pseudocount", type=float, default=1.0, help="Beta pseudocount for p_det draws (default 1).")
+    ap.add_argument("--gr-h0-pdet-draw-seed", type=int, default=0, help="RNG seed for p_det draws (default 0).")
+    ap.add_argument(
+        "--gr-h0-pdet-save-alpha-draws",
+        action="store_true",
+        help="Save alpha(H0) draws (NPZ) when using --gr-h0-pdet-marginalize (default: do not save).",
+    )
     args = ap.parse_args()
 
     # Convenience presets / resource knobs.
@@ -2759,6 +2777,142 @@ def main() -> int:
         )
         _write_json(out_dir / "gr_h0_grid_posterior.json", gr_res)
         print(f"[dark_sirens] GR H0 grid posterior: wrote {out_dir/'gr_h0_grid_posterior.json'}", flush=True)
+
+        if bool(args.gr_h0_pdet_marginalize):
+            if injections is None:
+                print("[dark_sirens] GR H0 pdet-marginalize: skipped (selection disabled)", flush=True)
+            else:
+                det_model = str(args.selection_det_model)
+                if det_model not in ("snr_binned", "snr_mchirp_binned"):
+                    print(
+                        f"[dark_sirens] GR H0 pdet-marginalize: skipped (det_model={det_model} not supported; use snr_binned or snr_mchirp_binned)",
+                        flush=True,
+                    )
+                else:
+                    H0g = np.asarray(gr_res.get("H0_grid", []), dtype=float)
+                    if H0g.size < 2:
+                        raise ValueError("GR H0 posterior missing H0_grid.")
+                    logL_events = np.zeros_like(H0g, dtype=float)
+                    for row in gr_res.get("events", []):
+                        logL_events += np.asarray(row.get("logL_H0", []), dtype=float)
+                    n_events_eff = int(gr_res.get("n_events", len(gr_res.get("events", []))))
+                    if n_events_eff <= 0:
+                        raise ValueError("Invalid GR H0 posterior n_events for pdet marginalization.")
+
+                    z_sel = float(args.selection_z_max) if args.selection_z_max is not None else float(args.gal_z_max)
+                    alpha_meta, alpha_draws = compute_alpha_h0_grid_pdet_marginalized(
+                        injections=injections,
+                        H0_grid=H0g,
+                        omega_m0=float(args.gr_h0_omega_m0),
+                        omega_k0=float(args.gr_h0_omega_k0),
+                        z_max=float(z_sel),
+                        det_model=str(args.selection_det_model),  # type: ignore[arg-type]
+                        snr_threshold=float(args.selection_snr_thresh) if args.selection_snr_thresh is not None else None,
+                        snr_binned_nbins=int(args.selection_snr_binned_nbins),
+                        mchirp_binned_nbins=int(args.selection_mchirp_binned_nbins),
+                        weight_mode=str(args.selection_weight_mode),  # type: ignore[arg-type]
+                        pop_z_mode=str(args.selection_pop_z_mode),  # type: ignore[arg-type]
+                        pop_z_powerlaw_k=float(args.selection_pop_z_k),
+                        pop_mass_mode=str(args.selection_pop_mass_mode),  # type: ignore[arg-type]
+                        pop_m1_alpha=float(args.selection_pop_m1_alpha),
+                        pop_m_min=float(args.selection_pop_m_min),
+                        pop_m_max=float(args.selection_pop_m_max),
+                        pop_q_beta=float(args.selection_pop_q_beta),
+                        pop_m_taper_delta=float(args.selection_pop_m_taper_delta),
+                        pop_m_peak=float(args.selection_pop_m_peak),
+                        pop_m_peak_sigma=float(args.selection_pop_m_peak_sigma),
+                        pop_m_peak_frac=float(args.selection_pop_m_peak_frac),
+                        inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+                        inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+                        inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+                        inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
+                        pdet_pseudocount=float(args.gr_h0_pdet_pseudocount),
+                        n_pdet_draws=int(args.gr_h0_pdet_draws),
+                        pdet_draw_seed=int(args.gr_h0_pdet_draw_seed),
+                    )
+
+                    # Marginalize: p(H0) ∝ E_draw[ exp( logL_events(H0) - N log alpha_draw(H0) ) ].
+                    log_alpha = np.log(np.clip(alpha_draws, 1e-300, np.inf))  # (n_draws, n_H0)
+                    logL_draws = logL_events.reshape((1, -1)) - float(n_events_eff) * log_alpha
+                    m = np.max(logL_draws, axis=0, keepdims=True)
+                    logL_marg = (m + np.log(np.mean(np.exp(logL_draws - m), axis=0, keepdims=True))).reshape((-1,))
+                    logL_marg = logL_marg - float(np.max(logL_marg))
+                    p_marg = np.exp(logL_marg)
+                    p_marg = p_marg / float(np.sum(p_marg))
+
+                    cdf = np.cumsum(p_marg)
+                    q16 = float(np.interp(0.16, cdf, H0g))
+                    q50 = float(np.interp(0.50, cdf, H0g))
+                    q84 = float(np.interp(0.84, cdf, H0g))
+                    mean = float(np.sum(p_marg * H0g))
+                    sd = float(np.sqrt(np.sum(p_marg * (H0g - mean) ** 2)))
+                    H0_map = float(H0g[int(np.argmax(p_marg))])
+
+                    sel_marg = {
+                        "method": "gr_h0_grid_posterior_sel_marginalized",
+                        "source": str(out_dir / "gr_h0_grid_posterior.json"),
+                        "n_events": int(n_events_eff),
+                        "omega_m0": float(args.gr_h0_omega_m0),
+                        "omega_k0": float(args.gr_h0_omega_k0),
+                        "selection_injections_hdf": str(args.selection_injections_hdf),
+                        "selection_injections_path": str(resolved_injections_path) if resolved_injections_path is not None else None,
+                        "selection_ifar_threshold_yr": float(args.selection_ifar_thresh_yr),
+                        "selection_z_max": float(z_sel),
+                        "selection_det_model": str(args.selection_det_model),
+                        "selection_weight_mode": str(args.selection_weight_mode),
+                        "selection_pop_z_mode": str(args.selection_pop_z_mode),
+                        "selection_pop_z_k": float(args.selection_pop_z_k),
+                        "selection_pop_mass_mode": str(args.selection_pop_mass_mode),
+                        "selection_pop_m1_alpha": float(args.selection_pop_m1_alpha),
+                        "selection_pop_m_min": float(args.selection_pop_m_min),
+                        "selection_pop_m_max": float(args.selection_pop_m_max),
+                        "selection_pop_q_beta": float(args.selection_pop_q_beta),
+                        "selection_pop_m_taper_delta": float(args.selection_pop_m_taper_delta),
+                        "selection_pop_m_peak": float(args.selection_pop_m_peak),
+                        "selection_pop_m_peak_sigma": float(args.selection_pop_m_peak_sigma),
+                        "selection_pop_m_peak_frac": float(args.selection_pop_m_peak_frac),
+                        "inj_mass_pdf_coords": str(args.inj_mass_pdf_coords),
+                        "inj_sampling_pdf_dist": str(args.inj_sampling_pdf_dist),
+                        "inj_sampling_pdf_mass_frame": str(args.inj_sampling_pdf_mass_frame),
+                        "inj_sampling_pdf_mass_scale": str(args.inj_sampling_pdf_mass_scale),
+                        "pdet_marginalization": alpha_meta,
+                        "H0_grid": [float(x) for x in H0g.tolist()],
+                        "posterior_sel_marginalized": [float(x) for x in p_marg.tolist()],
+                        "summary_sel_marginalized": {"mean": mean, "sd": sd, "p50": q50, "p16": q16, "p84": q84, "H0_map": H0_map},
+                    }
+                    out_path = out_dir / "gr_h0_grid_posterior_sel_marginalized.json"
+                    _write_json(out_path, sel_marg)
+                    _write_json(out_dir / "tables" / "gr_h0_alpha_pdet_marginalized.json", alpha_meta)
+                    if bool(args.gr_h0_pdet_save_alpha_draws):
+                        np.savez_compressed(
+                            out_dir / "tables" / "gr_h0_alpha_pdet_marginalized_draws.npz",
+                            H0_grid=np.asarray(H0g, dtype=float),
+                            alpha_draws=np.asarray(alpha_draws, dtype=float),
+                            meta=json.dumps(alpha_meta, sort_keys=True),
+                        )
+                    print(f"[dark_sirens] GR H0 selection-marginalized posterior: wrote {out_path}", flush=True)
+
+                    try:
+                        p0 = None
+                        if logL_events.size == H0g.size and np.all(np.isfinite(logL_events)):
+                            logL0 = logL_events - float(np.max(logL_events))
+                            p0 = np.exp(logL0)
+                            p0 = p0 / float(np.sum(p0))
+
+                        plt.figure(figsize=(7, 4))
+                        plt.plot(H0g, np.asarray(gr_res.get("posterior", []), dtype=float), color="C0", linewidth=2.0, label="selection-on")
+                        if p0 is not None:
+                            plt.plot(H0g, p0, color="k", linewidth=1.5, alpha=0.7, label="no-selection (diagnostic)")
+                        plt.plot(H0g, p_marg, color="C3", linewidth=2.0, label="selection-marginalized (p_det draws)")
+                        plt.xlabel(r"$H_0$ [km/s/Mpc]")
+                        plt.ylabel("posterior (arb. norm.)")
+                        plt.title("GR dark-siren $H_0$ posterior (selection uncertainty propagated)")
+                        plt.legend(fontsize=8)
+                        plt.tight_layout()
+                        plt.savefig(fig_dir / "gr_h0_posterior_sel_marginalized.png", dpi=160)
+                        plt.close()
+                    except Exception:
+                        pass
 
         # Quick figure: GR H0 posterior (optionally compare to no-selection curve).
         try:
