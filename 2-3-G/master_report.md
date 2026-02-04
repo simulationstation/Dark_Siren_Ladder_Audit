@@ -1,6 +1,6 @@
-# 2-3-G — Master Report (Selection proxy upgrade + isolator re-run)
+# 2-3-G — Master Report (Selection proxy upgrade + isolator re-run + decisive robustness checks)
 
-Date: **2026-02-03**  
+Date: **2026-02-03** (updated **2026-02-04**)  
 Repo: `simulationstation/Dark_Siren_Ladder_Audit`  
 
 ## Executive summary (what this test was)
@@ -25,6 +25,8 @@ Even after moving to a 2D selection proxy:
 
 This is the **“ghost”** behavior the project is designed to isolate: *model “wins” driven by selection normalization rather than by event data*.
 
+**2026-02-04 update (decisive checks):** we verified the ghost pattern is **robust** to injection-file/segment swaps and to population hyperparameter anchoring via LVK hyperposterior draws, and we built a **controlled synthetic** example that reproduces the sign flip under GR truth when PE distance information is weak (selection dominates totals).
+
 ## Artifacts (where to look)
 
 ### Tracked (this folder)
@@ -35,12 +37,19 @@ Figures referenced below are copied into this report folder so they are visible 
 - Per-event ΔLPD\_data (mode=none): `2-3-G/figures/delta_lpd_data_by_event_none.png`
 - Per-event ΔLPD\_total vs ΔLPD\_data (mode=none): `2-3-G/figures/delta_lpd_total_by_event_none.png`
 - Selection alpha log-ratio histogram: `2-3-G/figures/log_alpha_mu_minus_gr_hist.png`
+- Decisive-check deltas (real + synthetic): `2-3-G/figures/decisive_checks_deltas.png`
+
+Small, machine-readable summaries copied here for convenience:
+
+- `2-3-G/decisive_checks_summary.csv`
+- `2-3-G/decisive_checks_summary.json`
 
 ### Full raw outputs (gitignored but present locally)
 
 This run’s full output directory:
 
 - `outputs/workcycle_siren_popon_snr_mchirp_20260203_232125UTC/`
+  - (2026-02-04 decisive checks bundle): `outputs/workcycle_decisive_checks_20260203_235923UTC/`
 
 Key machine-readable summaries:
 
@@ -50,6 +59,9 @@ Key machine-readable summaries:
   `outputs/workcycle_siren_popon_snr_mchirp_20260203_232125UTC/isolator_totals.json`
 - Isolator per-event scores CSV:  
   `outputs/workcycle_siren_popon_snr_mchirp_20260203_232125UTC/isolator/tables/event_scores.csv`
+- Decisive-check summary CSV/JSON:
+  - `outputs/workcycle_decisive_checks_20260203_235923UTC/decisive_checks_summary.csv`
+  - `outputs/workcycle_decisive_checks_20260203_235923UTC/decisive_checks_summary.json`
 
 ## Inputs (what data this used)
 
@@ -339,5 +351,46 @@ So the ghost persists: the selection normalization is still the lever that can f
 
 1. The ghost mechanism is not an artifact of a simplistic 1D selection curve; it persists under a 2D selection proxy.
 2. For this event set and these population assumptions, **GR is strongly preferred by the data term**, while **μ is preferred mainly through selection normalization**.
-3. This strengthens (not weakens) the audit narrative: we must treat total “μ wins” as selection behavior until controls and nulls confirm the data term also prefers μ.
+3. The sign flip is **robust** to injection-file/segment swaps and to LVK hyperposterior population draws (so it is not “one weird injection file”).
+4. A controlled synthetic example can reproduce a μ “total win” even when GR is the true model (when distance information is weak), so total “μ wins” are **not evidence** for new physics by themselves.
+5. This strengthens (not weakens) the audit narrative: we must treat total “μ wins” as selection behavior until controls and nulls confirm the data term also prefers μ.
 
+## Addendum (2026-02-04) — Decisive robustness checks + controlled synthetic reproduction
+
+This section documents the “stop beating the dead horse” checks: swap injection sources, anchor population hyperparameters to LVK hyperposterior draws, and reproduce the sign flip in a synthetic where GR is true.
+
+All decisive-check results in one place:
+- `2-3-G/decisive_checks_summary.csv`
+- `2-3-G/decisive_checks_summary.json`
+
+![Decisive-check deltas](figures/decisive_checks_deltas.png)
+
+### A) Injection file / segment swaps (real data)
+
+We re-ran the selection alpha + isolator (mode=`none`) while swapping the selection-injection source:
+- O3b sensitivity segment (baseline): `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5`
+- GWTC-3 O3a BBHpop injection set: `data/cache/gw/zenodo/11254021/extracted/GWTC-3-population-data/injections/o3a_bbhpop_inj_info.hdf`
+- Full O3 sensitivity file: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12.hdf5`
+- O3a sensitivity segment: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1238166018-15843600.hdf5`
+
+Outcome: the same sign structure holds across all swaps:
+- \(\Delta \mathrm{LPD}_{\rm data} < 0\) (data prefers GR),
+- \(\Delta \mathrm{LPD}_{\rm sel} > 0\) (selection prefers μ),
+- \(\Delta \mathrm{LPD}_{\rm total} > 0\) (net flips to μ).
+
+### B) Population anchoring via LVK hyperposterior draws (real data)
+
+We repeated the same scoring using 5 independent draws from the LVK GWTC‑3 O3a population hyperposterior (PowerLaw+Peak + powerlaw redshift):
+
+- `data/cache/gw/zenodo/11254021/extracted/GWTC-3-population-data/o3a_population_data_release/Population_Samples/default/o1o2o3_mass_c_iid_mag_two_comp_iid_tilt_powerlaw_redshift_result.json`
+
+Outcome: the same sign structure persists under LVK-ish hyperparameters (not a fragile “hand-tuned” pop prior).
+
+### C) Controlled synthetic reproduction (GR truth)
+
+We built two synthetic injection-recovery-style demos:
+
+- `ghost_simulation`: “informative” synthetic PE distance constraints → data term dominates → total stays GR (no flip).
+- `ghost_simulation_weakdata`: broad (prior-dominated) synthetic PE distance constraints → selection dominates → total flips to μ **even though GR is true**.
+
+This is the key interpretive result: the μ total win can arise as a predictable selection-dominance regime, so it should not be read as GW evidence for μ without additional controls that force the data term itself to prefer μ.
