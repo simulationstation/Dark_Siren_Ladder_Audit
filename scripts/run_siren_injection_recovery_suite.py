@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import os
+from dataclasses import replace
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,29 @@ _G_H0_GRID = None
 _G_ALPHA_GRID = None
 _G_ALPHA_META = None
 _G_JSON_DIR = None
+_G_H0_TRUE_MODE = None
+_G_H0_TRUE_FIXED = None
+_G_H0_TRUE_UNIFORM_MIN = None
+_G_H0_TRUE_UNIFORM_MAX = None
+
+
+def _sample_h0_true(*, seed: int) -> float:
+    global _G_H0_TRUE_MODE, _G_H0_TRUE_FIXED, _G_H0_TRUE_UNIFORM_MIN, _G_H0_TRUE_UNIFORM_MAX  # noqa: PLW0603
+    if _G_H0_TRUE_MODE is None or _G_H0_TRUE_FIXED is None:
+        raise RuntimeError("Worker globals not initialized (H0 truth sampling).")
+    mode = str(_G_H0_TRUE_MODE)
+    if mode == "fixed":
+        return float(_G_H0_TRUE_FIXED)
+    if mode == "uniform":
+        if _G_H0_TRUE_UNIFORM_MIN is None or _G_H0_TRUE_UNIFORM_MAX is None:
+            raise RuntimeError("Worker globals not initialized (uniform H0 truth bounds).")
+        lo = float(_G_H0_TRUE_UNIFORM_MIN)
+        hi = float(_G_H0_TRUE_UNIFORM_MAX)
+        if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
+            raise ValueError("Invalid uniform H0 truth bounds.")
+        rng = np.random.default_rng(int(seed) + 1_000_003)
+        return float(rng.uniform(lo, hi))
+    raise ValueError(f"Unsupported h0_true_mode: {mode}")
 
 
 def _run_rep_worker(rep: int, seed: int) -> dict[str, Any]:
@@ -47,9 +71,11 @@ def _run_rep_worker(rep: int, seed: int) -> dict[str, Any]:
     if rep_path.exists():
         return {"rep": int(rep), "seed": int(seed), "skipped": True}
 
+    h0_true = _sample_h0_true(seed=int(seed))
+    cfg = replace(_G_CFG, h0_true=float(h0_true))
     out = run_injection_recovery_gr_h0(
         injections=_G_INJECTIONS,
-        cfg=_G_CFG,
+        cfg=cfg,
         n_events=int(_G_N_EVENTS),
         h0_grid=_G_H0_GRID,
         seed=int(seed),
@@ -66,6 +92,7 @@ def _run_rep_worker(rep: int, seed: int) -> dict[str, Any]:
     return {
         "rep": int(rep),
         "seed": int(seed),
+        "h0_true": float(h0_true),
         "used_on": int(s.get("n_events_used_selection_on", -1)),
         "p50_on": _safe_float(s.get("selection_on", {}).get("summary", {}).get("p50")),
         "bias_p50_on": _safe_float(s.get("bias_p50_selection_on")),
@@ -114,6 +141,23 @@ def _load_summary_from_rep(rep_path: Path) -> dict[str, Any]:
         cdf = np.cumsum(p)
         return float(np.interp(float(q), cdf, g))
 
+    def _cdf_at(grid: list[float], posterior: list[float], x: float) -> float:
+        g = np.asarray(grid, dtype=float)
+        p = np.asarray(posterior, dtype=float)
+        if g.ndim != 1 or p.ndim != 1 or g.shape != p.shape or g.size < 2:
+            return float("nan")
+        if not np.isfinite(float(x)):
+            return float("nan")
+        p = np.where(np.isfinite(p), p, 0.0)
+        psum = float(np.sum(p))
+        if not (np.isfinite(psum) and psum > 0.0):
+            return float("nan")
+        p = p / psum
+        cdf = np.cumsum(p)
+        # Interpret the discrete grid posterior as piecewise-linear CDF.
+        u = float(np.interp(float(x), g, cdf, left=0.0, right=1.0))
+        return float(np.clip(u, 0.0, 1.0))
+
     on = dict(d.get("gr_h0_selection_on", {}))
     off = dict(d.get("gr_h0_selection_off", {}))
     h0_grid = on.get("H0_grid", off.get("H0_grid", []))
@@ -126,6 +170,9 @@ def _load_summary_from_rep(rep_path: Path) -> dict[str, Any]:
     q975_on = _q_from_grid(h0_grid, on.get("posterior", []), 0.975)
     q84_off = _q_from_grid(h0_grid, off.get("posterior", []), 0.84)
     q84_on = _q_from_grid(h0_grid, on.get("posterior", []), 0.84)
+
+    u_h0_off = _cdf_at(h0_grid, off.get("posterior", []), float(h0_true))
+    u_h0_on = _cdf_at(h0_grid, on.get("posterior", []), float(h0_true))
 
     pp = dict(s.get("pe_pp", {}))
     pp_dL = dict(pp.get("dL", {}))
@@ -155,6 +202,8 @@ def _load_summary_from_rep(rep_path: Path) -> dict[str, Any]:
         "H0_p50_on": _safe_float(s.get("selection_on", {}).get("summary", {}).get("p50")),
         "H0_p84_on": float(q84_on),
         "H0_p975_on": float(q975_on),
+        "u_h0_off": float(u_h0_off),
+        "u_h0_on": float(u_h0_on),
         "bias_p50_on": _safe_float(s.get("bias_p50_selection_on")),
         "bias_map_on": _safe_float(s.get("bias_map_selection_on")),
         "pp_dL_mean": _safe_float(pp_dL.get("mean")),
@@ -167,7 +216,15 @@ def main() -> int:
     ap.add_argument("--selection-injections-hdf", required=True, help="Path to O3 sensitivity injection file (HDF5).")
     ap.add_argument("--selection-ifar-thresh-yr", type=float, default=1.0, help="IFAR threshold (years) for injections (default 1).")
 
-    ap.add_argument("--h0-true", type=float, required=True, help="Truth H0 used to generate synthetic detected events.")
+    ap.add_argument("--h0-true", type=float, default=70.0, help="Truth H0 used to generate synthetic detected events (default 70).")
+    ap.add_argument(
+        "--h0-true-mode",
+        choices=["fixed", "uniform"],
+        default="fixed",
+        help="Truth H0 policy: fixed uses --h0-true; uniform samples H0_true ~ Uniform[lo,hi] (default fixed).",
+    )
+    ap.add_argument("--h0-true-uniform-min", type=float, default=None, help="Uniform H0_true lower bound (default: --h0-min).")
+    ap.add_argument("--h0-true-uniform-max", type=float, default=None, help="Uniform H0_true upper bound (default: --h0-max).")
     ap.add_argument("--n-events", type=int, default=50, help="Synthetic detected events per replicate (default 50).")
     ap.add_argument("--n-rep", type=int, default=32, help="Number of replicates (default 32).")
     ap.add_argument("--seed0", type=int, default=1000, help="Base seed (default 1000).")
@@ -182,7 +239,7 @@ def main() -> int:
         "--z-max-mode",
         choices=["fixed", "auto"],
         default="fixed",
-        help="z_max policy: fixed uses --z-max; auto expands z_max so the H0 grid doesn't induce support truncation from the z_max cutoff (default fixed).",
+        help="z_max policy: fixed uses --z-max; auto expands z_max to avoid support truncation (debug-only; can silently change the inference regime) (default fixed).",
     )
     ap.add_argument("--z-max-auto-cap", type=float, default=5.0, help="Max z used for the auto z_max inversion cache (default 5).")
     ap.add_argument("--z-max-auto-margin", type=float, default=0.10, help="Additive safety margin on inferred z_max (default 0.10).")
@@ -312,6 +369,19 @@ def main() -> int:
 
     H0_grid = np.linspace(float(args.h0_min), float(args.h0_max), int(h0_n))
 
+    h0_true_mode = str(args.h0_true_mode)
+    h0_true_fixed = float(args.h0_true)
+    if h0_true_mode == "uniform":
+        if str(args.z_max_mode) == "auto":
+            raise ValueError("h0_true_mode=uniform is not compatible with z_max_mode=auto (z_max would depend on truth). Use z_max_mode=fixed.")
+        h0_true_uniform_min = float(args.h0_true_uniform_min) if args.h0_true_uniform_min is not None else float(args.h0_min)
+        h0_true_uniform_max = float(args.h0_true_uniform_max) if args.h0_true_uniform_max is not None else float(args.h0_max)
+        if not (np.isfinite(h0_true_uniform_min) and np.isfinite(h0_true_uniform_max) and h0_true_uniform_max > h0_true_uniform_min):
+            raise ValueError("Invalid --h0-true-uniform-min/max bounds.")
+    else:
+        h0_true_uniform_min = None
+        h0_true_uniform_max = None
+
     # Auto-expand z_max if requested: avoid QC-driven biases from partial support at high H0.
     z_max = float(args.z_max)
     if str(args.z_max_mode) == "auto":
@@ -320,7 +390,7 @@ def main() -> int:
             omega_m0=float(args.omega_m0),
             omega_k0=float(args.omega_k0),
             z_gen_max=float(z_max),
-            h0_true=float(args.h0_true),
+            h0_true=float(h0_true_fixed),
             h0_eval=float(h0_eval),
             z_cap=float(args.z_max_auto_cap),
         )
@@ -330,7 +400,7 @@ def main() -> int:
         z_max = float(max(z_max, z_req + margin))
 
     cfg = InjectionRecoveryConfig(
-        h0_true=float(args.h0_true),
+        h0_true=float(h0_true_fixed),
         omega_m0=float(args.omega_m0),
         omega_k0=float(args.omega_k0),
         z_max=float(z_max),
@@ -376,6 +446,10 @@ def main() -> int:
     manifest = {
         "created_utc": _utc_stamp(),
         "config": cfg.__dict__,
+        "h0_true_mode": str(h0_true_mode),
+        "h0_true_fixed": float(h0_true_fixed),
+        "h0_true_uniform_min": float(h0_true_uniform_min) if h0_true_uniform_min is not None else None,
+        "h0_true_uniform_max": float(h0_true_uniform_max) if h0_true_uniform_max is not None else None,
         "h0_grid": [float(x) for x in H0_grid.tolist()],
         "n_rep": int(n_rep),
         "n_events": int(n_events),
@@ -411,9 +485,16 @@ def main() -> int:
             print(f"[note] all replicates already present ({len(existing)}/{int(n_rep)}); skipping run.", flush=True)
         elif n_proc == 1:
             for rep, seed in todo:
+                if h0_true_mode == "fixed":
+                    h0_true = float(h0_true_fixed)
+                else:
+                    assert h0_true_uniform_min is not None and h0_true_uniform_max is not None
+                    rng = np.random.default_rng(int(seed) + 1_000_003)
+                    h0_true = float(rng.uniform(float(h0_true_uniform_min), float(h0_true_uniform_max)))
+                cfg_rep = replace(cfg, h0_true=float(h0_true))
                 out = run_injection_recovery_gr_h0(
                     injections=injections,
-                    cfg=cfg,
+                    cfg=cfg_rep,
                     n_events=int(n_events),
                     h0_grid=H0_grid,
                     seed=int(seed),
@@ -425,7 +506,8 @@ def main() -> int:
                 _write_json(rep_path, out)
                 s = out.get("summary", {})
                 print(
-                    f"[rep {rep:04d}/{int(n_rep)}] seed={seed} used_on={s.get('n_events_used_selection_on')} "
+                    f"[rep {rep:04d}/{int(n_rep)}] seed={seed} h0_true={float(s.get('h0_true', float('nan'))):.3f} "
+                    f"used_on={s.get('n_events_used_selection_on')} "
                     f"p50_on={s.get('selection_on', {}).get('summary', {}).get('p50'):.3f} "
                     f"bias_p50_on={s.get('bias_p50_selection_on'):.3f}",
                     flush=True,
@@ -442,6 +524,11 @@ def main() -> int:
             _G_ALPHA_GRID = alpha_grid
             _G_ALPHA_META = alpha_meta
             _G_JSON_DIR = str(json_dir)
+            global _G_H0_TRUE_MODE, _G_H0_TRUE_FIXED, _G_H0_TRUE_UNIFORM_MIN, _G_H0_TRUE_UNIFORM_MAX  # noqa: PLW0603
+            _G_H0_TRUE_MODE = str(h0_true_mode)
+            _G_H0_TRUE_FIXED = float(h0_true_fixed)
+            _G_H0_TRUE_UNIFORM_MIN = float(h0_true_uniform_min) if h0_true_uniform_min is not None else None
+            _G_H0_TRUE_UNIFORM_MAX = float(h0_true_uniform_max) if h0_true_uniform_max is not None else None
 
             done_n = int(len(existing))
             max_workers = min(int(n_proc), int(len(todo)))
@@ -454,7 +541,8 @@ def main() -> int:
                     done_n += 1
                     if not bool(res.get("skipped", False)):
                         print(
-                            f"[rep {rep:04d}/{int(n_rep)}] seed={seed} used_on={res.get('used_on')} "
+                            f"[rep {rep:04d}/{int(n_rep)}] seed={seed} h0_true={float(res.get('h0_true', float('nan'))):.3f} "
+                            f"used_on={res.get('used_on')} "
                             f"p50_on={float(res.get('p50_on', float('nan'))):.3f} "
                             f"bias_p50_on={float(res.get('bias_p50_on', float('nan'))):.3f}",
                             flush=True,
@@ -504,14 +592,27 @@ def main() -> int:
     gate2_pass = np.asarray([bool(r.get("gate2_pass", False)) for r in rows], dtype=bool)
     edge_on = np.asarray([bool(r.get("H0_map_at_edge_on", False)) for r in rows], dtype=bool)
     edge_off = np.asarray([bool(r.get("H0_map_at_edge_off", False)) for r in rows], dtype=bool)
-    h0_true = float(args.h0_true)
+    h0_true_arr = np.asarray([_safe_float(r.get("h0_true")) for r in rows], dtype=float)
     p16_on = np.asarray([_safe_float(r.get("H0_p16_on")) for r in rows], dtype=float)
     p84_on = np.asarray([_safe_float(r.get("H0_p84_on")) for r in rows], dtype=float)
     p025_on = np.asarray([_safe_float(r.get("H0_p025_on")) for r in rows], dtype=float)
     p975_on = np.asarray([_safe_float(r.get("H0_p975_on")) for r in rows], dtype=float)
-    cov68 = float(np.nanmean((h0_true >= p16_on) & (h0_true <= p84_on)))
-    cov95 = float(np.nanmean((h0_true >= p025_on) & (h0_true <= p975_on)))
+    cov68 = float(np.nanmean((h0_true_arr >= p16_on) & (h0_true_arr <= p84_on)))
+    cov95 = float(np.nanmean((h0_true_arr >= p025_on) & (h0_true_arr <= p975_on)))
     pp_dL_ks = np.asarray([_safe_float(r.get("pp_dL_ks")) for r in rows], dtype=float)
+
+    u_h0_on = np.asarray([_safe_float(r.get("u_h0_on")) for r in rows], dtype=float)
+    u_h0_on = u_h0_on[np.isfinite(u_h0_on)]
+    if u_h0_on.size:
+        u_sorted = np.sort(np.clip(u_h0_on, 0.0, 1.0))
+        i = np.arange(1, u_sorted.size + 1, dtype=float)
+        d_plus = float(np.max(i / u_sorted.size - u_sorted))
+        d_minus = float(np.max(u_sorted - (i - 1.0) / u_sorted.size))
+        u_h0_on_ks = float(max(d_plus, d_minus))
+        u_h0_on_mean = float(np.mean(u_sorted))
+    else:
+        u_h0_on_ks = float("nan")
+        u_h0_on_mean = float("nan")
 
     pp_all_dL_arr = np.asarray(pp_all_dL, dtype=float)
     if pp_all_dL_arr.size:
@@ -526,7 +627,12 @@ def main() -> int:
         pp_all_mean = float("nan")
     agg = {
         "n_rep_done": int(len(rows)),
-        "h0_true": h0_true,
+        "h0_true_mode": str(h0_true_mode),
+        "h0_true_fixed": float(h0_true_fixed),
+        "h0_true_uniform_min": float(h0_true_uniform_min) if h0_true_uniform_min is not None else None,
+        "h0_true_uniform_max": float(h0_true_uniform_max) if h0_true_uniform_max is not None else None,
+        "h0_true_mean": float(np.nanmean(h0_true_arr)),
+        "h0_true_sd": float(np.nanstd(h0_true_arr)),
         "bias_p50_on_mean": float(np.nanmean(bias)),
         "bias_p50_on_sd": float(np.nanstd(bias)),
         "used_on_mean": float(np.nanmean(used_on)),
@@ -539,11 +645,14 @@ def main() -> int:
         "H0_map_at_edge_off_n": int(np.sum(edge_off)),
         "coverage_68_on": cov68,
         "coverage_95_on": cov95,
+        "u_h0_on_n": int(u_h0_on.size),
+        "u_h0_on_mean": float(u_h0_on_mean),
+        "u_h0_on_ks": float(u_h0_on_ks),
         "pp_dL_ks_mean": float(np.nanmean(pp_dL_ks)),
         "pp_dL_all_n": int(pp_all_dL_arr.size),
         "pp_dL_all_mean": float(pp_all_mean),
         "pp_dL_all_ks": float(pp_all_ks),
-        "note": "Calibration/audit diagnostic. For a well-calibrated synthetic PE generator, per-event truth percentiles (P–P) should be ~Uniform[0,1] and coverage_68_on should be near 0.68.",
+        "note": "Calibration/audit diagnostic. If h0_true_mode=uniform matches the implicit uniform prior on the H0 grid, u_h0_on should be ~Uniform[0,1] (SBC-style check).",
     }
     _write_json(tab_dir / "suite_aggregate.json", agg)
 
@@ -626,6 +735,29 @@ def main() -> int:
             plt.title("Synthetic PE distance P–P histogram")
             plt.tight_layout()
             plt.savefig(fig_dir / "pp_dL_hist.png", dpi=160)
+            plt.close()
+
+        if u_h0_on.size:
+            plt.figure(figsize=(4.8, 4.8))
+            u = np.sort(u_h0_on)
+            n_u = int(u.size)
+            plt.plot(u, (np.arange(1, n_u + 1) / n_u), lw=1.8, label="empirical")
+            plt.plot([0, 1], [0, 1], color="k", lw=1.0, ls="--", label="uniform")
+            plt.xlabel("u = CDF(H0_true)  (selection ON)")
+            plt.ylabel("empirical CDF")
+            plt.title("SBC-style check on H0 (selection ON)")
+            plt.legend(frameon=False)
+            plt.tight_layout()
+            plt.savefig(fig_dir / "sbc_u_h0_on_cdf.png", dpi=160)
+            plt.close()
+
+            plt.figure(figsize=(7.2, 4.0))
+            plt.hist(np.clip(u_h0_on, 0.0, 1.0), bins=20, range=(0, 1), alpha=0.85)
+            plt.xlabel("u = CDF(H0_true)  (selection ON)")
+            plt.ylabel("count")
+            plt.title("SBC u-histogram (selection ON)")
+            plt.tight_layout()
+            plt.savefig(fig_dir / "sbc_u_h0_on_hist.png", dpi=160)
             plt.close()
     else:
         print("[note] matplotlib not available; skipping figures", flush=True)

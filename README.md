@@ -106,6 +106,18 @@ To avoid “eternal knob turning”, `scripts/run_siren_gate2_ladder.py` runs:
 
 Outputs include `outputs/siren_gate2_ladder_*/ladder.csv` (quick scan) and `ladder_summary.json` (machine-readable).
 
+To run a larger *resumable* injection-recovery suite and add an SBC-style check on the GR \(H_0\) control, use:
+
+```bash
+./.venv/bin/python scripts/run_siren_injection_recovery_suite.py \
+  --selection-injections-hdf data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5 \
+  --h0-min 40 --h0-max 100 --h0-n 121 \
+  --h0-true-mode uniform \
+  --n-events 25 --n-rep 64
+```
+
+This writes `tables/suite_aggregate.json` with `u_h0_on_*` and produces `figures/sbc_u_h0_on_{cdf,hist}.png`.
+
 ## Third-party software
 
 This project uses (and optionally benchmarks against) open-source gravitational-wave community software, including:

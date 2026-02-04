@@ -27,6 +27,9 @@ This is the **“ghost”** behavior the project is designed to isolate: *model 
 
 **2026-02-04 update (decisive checks):** we verified the ghost pattern is **robust** to injection-file/segment swaps and to population hyperparameter anchoring via LVK hyperposterior draws, and we built a **controlled synthetic** example that reproduces the sign flip under GR truth when PE distance information is weak (selection dominates totals).
 
+**2026-02-04 update (Gate‑2 calibration):** a focused SBC-style Gate‑2 GR \(H_0\) calibration note (and figures) is in:
+- `2-3-G/gate2_sbc_report.md`
+
 ## Artifacts (where to look)
 
 ### Tracked (this folder)

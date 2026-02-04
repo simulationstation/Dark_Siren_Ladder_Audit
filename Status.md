@@ -38,6 +38,7 @@ We are **not** treating any positive “score” as evidence. The goal is to det
 **Injection-recovery calibration loop**
 - Synthetic injection → synthetic PE generation → hierarchical inference → calibration metrics.
 - Includes P–P diagnostics for truth percentiles inside synthetic posteriors (distance + mass coordinates).
+- Supports an SBC-style \(H_0\) check when sampling \(H_0^\star\) from the grid prior (uniform): \(u=\mathrm{CDF}(H_0^\star)\) should be ~Uniform\([0,1]\).
 - Key module: `src/entropy_horizon_recon/siren_injection_recovery.py`
 - Runners: `scripts/run_siren_injection_recovery.py`, `scripts/run_siren_injection_recovery_suite.py`
 
@@ -68,6 +69,8 @@ There are multiple completed suites under `outputs/` (gitignored, but present lo
 
 A *known failure mode* existed for wide \(H_0\) grids when \(z_{\max}\) was too small and QC silently skipped events; that produced a large apparent bias. We added an **auto \(z_{\max}\)** guard to prevent this truncation artifact.
 
+**2026‑02‑04 update (important):** auto-expanding \(z_{\max}\) is now treated as a **debug-only** knob. In closed-loop tests it can silently change the inference regime (e.g. expand \(z_{\max}\) far beyond the intended galaxy/selection window) and produce catastrophic injection-recovery bias on wide \(H_0\) grids. The default policy in the Gate‑2 and injection-recovery runners is now **`z_max_mode=fixed`**.
+
 ## 3) What’s in this repo (layout)
 
 Tracked (code/docs):
@@ -92,7 +95,7 @@ Gate‑2 requirement:
 
 Immediate actions:
 1. Re-run the previously “wide-grid” injection-recovery suite using:
-   - `z_max_mode=auto` (already implemented),
+   - `z_max_mode=fixed` (treat `auto` as debug-only; do not use for science gating),
    - QC **fail-loud** (no silent skipping),
    - confirm bias ~0 and interior peaks across the entire grid.
 
@@ -150,4 +153,3 @@ We are “ready” when:
 - selection modeling is consistent (same population assumptions across PE de-prior, population prior, and injections),
 - matched nulls reliably kill ghost mechanisms,
 - only then we interpret anything as an astrophysical/cosmological statement.
-
