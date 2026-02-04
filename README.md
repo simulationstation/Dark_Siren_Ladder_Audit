@@ -34,6 +34,20 @@ Then you can compare `alpha(H0)` computed with our distance cache vs wcosmo vs I
   --plot
 ```
 
+### Injection `sampling_pdf` convention adapters
+
+Some injection releases define `sampling_pdf` in coordinates other than `(z, m_source)` (e.g. `log(dL)` and/or detector-frame masses). Many of the Gate‑2 audit runners support explicit adapters:
+
+- `--inj-sampling-pdf-dist {z,dL,log_dL}`
+- `--inj-sampling-pdf-mass-frame {source,detector}`
+- `--inj-sampling-pdf-mass-scale {linear,log}`
+
+For the O3b mixture injection file above (`endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5`), our SBC-style injection-recovery sweeps indicate improved calibration using:
+
+```bash
+--inj-sampling-pdf-dist log_dL --inj-sampling-pdf-mass-frame detector --inj-sampling-pdf-mass-scale linear
+```
+
 ## Gate‑2 population anchoring (recommended)
 
 The GR \(H_0\) selection-on control is sensitive to population assumptions. For a “best available” baseline, you can marginalize over **LVK GWTC‑3 population hyperposterior draws** (PowerLaw+Peak + powerlaw redshift), using the O3a population data release bilby-result JSON:
