@@ -19,19 +19,39 @@ def _load_gate2_json(path: Path) -> tuple[np.ndarray, np.ndarray]:
     obj = json.loads(path.read_text())
     if not isinstance(obj, dict):
         raise ValueError("Input JSON must be an object.")
-    if "H0_grid" not in obj:
-        raise ValueError("Missing H0_grid.")
-    H0 = as_1d_finite_array(obj["H0_grid"], name="H0_grid")
-    if "posterior" in obj:
-        p = as_1d_finite_array(obj["posterior"], name="posterior")
+
+    # Accept both:
+    #  1) Gate-2 JSONs (top-level H0_grid + posterior/logL_H0_rel), and
+    #  2) Pop-marginal summaries (inputs.H0_grid + mixture.posterior).
+    if "H0_grid" in obj:
+        H0 = as_1d_finite_array(obj["H0_grid"], name="H0_grid")
+        if "posterior" in obj:
+            p = as_1d_finite_array(obj["posterior"], name="posterior")
+            return H0, p
+        if "logL_H0_rel" in obj:
+            logL = as_1d_finite_array(obj["logL_H0_rel"], name="logL_H0_rel")
+            if logL.shape != H0.shape:
+                raise ValueError("logL_H0_rel must match H0_grid.")
+            p = np.exp(logL - float(np.max(logL)))
+            return H0, p
+        raise ValueError("Gate-2 JSON must contain either posterior or logL_H0_rel.")
+
+    if "inputs" in obj and "mixture" in obj:
+        inputs = obj.get("inputs") or {}
+        mix = obj.get("mixture") or {}
+        if not isinstance(inputs, dict) or not isinstance(mix, dict):
+            raise ValueError("Invalid pop-marginal summary structure.")
+        if "H0_grid" not in inputs:
+            raise ValueError("Pop-marginal summary missing inputs.H0_grid.")
+        if "posterior" not in mix:
+            raise ValueError("Pop-marginal summary missing mixture.posterior.")
+        H0 = as_1d_finite_array(inputs["H0_grid"], name="inputs.H0_grid")
+        p = as_1d_finite_array(mix["posterior"], name="mixture.posterior")
+        if p.shape != H0.shape:
+            raise ValueError("mixture.posterior must match inputs.H0_grid.")
         return H0, p
-    if "logL_H0_rel" in obj:
-        logL = as_1d_finite_array(obj["logL_H0_rel"], name="logL_H0_rel")
-        if logL.shape != H0.shape:
-            raise ValueError("logL_H0_rel must match H0_grid.")
-        p = np.exp(logL - float(np.max(logL)))
-        return H0, p
-    raise ValueError("Input JSON must contain either posterior or logL_H0_rel.")
+
+    raise ValueError("Unrecognized JSON format (expected Gate-2 JSON or pop-marginal summary JSON).")
 
 
 def main() -> int:
