@@ -140,6 +140,30 @@ def main() -> int:
     ap.add_argument("--snr-binned-nbins", type=int, default=200)
     ap.add_argument("--mchirp-binned-nbins", type=int, default=20)
     ap.add_argument("--weight-mode", choices=["none", "inv_sampling_pdf"], default="inv_sampling_pdf")
+    ap.add_argument(
+        "--inj-mass-pdf-coords",
+        choices=["m1m2", "m1q"],
+        default="m1m2",
+        help="Mass-coordinate convention for injection sampling_pdf (default m1m2).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-dist",
+        choices=["z", "dL", "log_dL"],
+        default="z",
+        help="Distance/redshift coordinate used by injection sampling_pdf (default z).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-frame",
+        choices=["source", "detector"],
+        default="source",
+        help="Mass-frame used by injection sampling_pdf (default source).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-scale",
+        choices=["linear", "log"],
+        default="linear",
+        help="Mass coordinate scale used by injection sampling_pdf (default linear).",
+    )
 
     # Population baseline knobs (grid items may override modes only; parameters are shared).
     ap.add_argument("--pop-m1-alpha", type=float, default=2.3)
@@ -298,6 +322,10 @@ def main() -> int:
                 snr_binned_nbins=int(args.snr_binned_nbins),
                 mchirp_binned_nbins=int(args.mchirp_binned_nbins),
                 weight_mode=str(args.weight_mode),  # type: ignore[arg-type]
+                inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+                inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+                inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+                inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
                 pop_z_mode=str(cfg["pop_z_mode"]),  # type: ignore[arg-type]
                 pop_z_powerlaw_k=float(cfg["pop_z_powerlaw_k"]),
                 pop_mass_mode=str(cfg["pop_mass_mode"]),  # type: ignore[arg-type]
@@ -357,6 +385,10 @@ def main() -> int:
             "snr_binned_nbins": int(args.snr_binned_nbins),
             "mchirp_binned_nbins": int(args.mchirp_binned_nbins),
             "weight_mode": str(args.weight_mode),
+            "inj_mass_pdf_coords": str(args.inj_mass_pdf_coords),
+            "inj_sampling_pdf_dist": str(args.inj_sampling_pdf_dist),
+            "inj_sampling_pdf_mass_frame": str(args.inj_sampling_pdf_mass_frame),
+            "inj_sampling_pdf_mass_scale": str(args.inj_sampling_pdf_mass_scale),
             "pop_mode": str(args.pop_mode),
             "lvk_pop_result_json": str(Path(args.lvk_pop_result_json).expanduser().resolve())
             if args.lvk_pop_result_json is not None
