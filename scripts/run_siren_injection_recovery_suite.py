@@ -260,6 +260,18 @@ def main() -> int:
         help="Mass-coordinate convention for injection sampling_pdf (default m1m2).",
     )
     ap.add_argument(
+        "--inj-sampling-pdf-dist",
+        choices=["z", "dL"],
+        default="z",
+        help="Distance/redshift coordinate used by injection sampling_pdf: 'z' means sampling_pdf is a density in z; 'dL' means density in luminosity distance and will be converted using dL/dz (default z).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-frame",
+        choices=["source", "detector"],
+        default="source",
+        help="Mass-frame used by injection sampling_pdf: 'source' means source-frame component masses; 'detector' means detector-frame masses and will be converted using (1+z) Jacobians (default source).",
+    )
+    ap.add_argument(
         "--include-pdet-in-event-term",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -422,6 +434,8 @@ def main() -> int:
         pop_m_peak_frac=float(args.pop_m_peak_frac),
         weight_mode=str(args.weight_mode),  # type: ignore[arg-type]
         inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+        inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
         selection_include_h0_volume_scaling=bool(args.selection_include_h0_volume_scaling),
         include_pdet_in_event_term=bool(args.include_pdet_in_event_term),
         pe_obs_mode=str(args.pe_obs_mode),  # type: ignore[arg-type]

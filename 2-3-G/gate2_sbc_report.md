@@ -74,14 +74,46 @@ That is consistent with the project’s central thesis: in spectral-only dark-si
 
 ## Most likely actionable next step
 
-The most plausible technical culprit consistent with the SBC behavior is **injection reweighting conventions** under `weight_mode=inv_sampling_pdf`:
+### Follow‑up: was `sampling_pdf` convention the culprit?
 
-- The O3 sensitivity injection file provides `sampling_pdf` alongside **both** source-frame and detector-frame masses and both `distance` and `redshift`.
-- If `sampling_pdf` is defined in **detector-frame masses and luminosity distance**, then importance weights that target a population model written in **source-frame masses and redshift** require additional Jacobians (beyond the already-implemented \((m_1,m_2)\to(m_1,q)\) factor).
-- Those Jacobians only matter when `pop_z_mode != none` and/or `pop_mass_mode != none`, matching the observed failure mode.
+We implemented a “convention adapter” for the injection `sampling_pdf` interpretation and tested whether a missing Jacobian is responsible for the SBC failure when population weights are ON.
 
-Concrete work item:
-- audit `sampling_pdf` coordinate conventions and implement the missing Jacobian(s) in the injection-weight path used by:
-  - `src/entropy_horizon_recon/dark_siren_h0.py::_injection_weights`
-  - `src/entropy_horizon_recon/siren_injection_recovery.py::generate_synthetic_detected_events_from_injections`
+Code changes (defaults preserve current behavior):
+- `inj_sampling_pdf_dist ∈ {z, dL}`: treat `sampling_pdf` as a density in z (default) or luminosity distance (apply a `1/(dL/dz)` Jacobian).
+- `inj_sampling_pdf_mass_frame ∈ {source, detector}`: treat `sampling_pdf` as a density in source-frame masses (default) or detector-frame masses (apply a `1/(1+z)^k` Jacobian with `k` depending on mass coordinates).
 
+We ran a **4‑way matrix** at fixed settings (`pop_z_mode=comoving_uniform`, `pop_mass_mode=powerlaw_peak_q_smooth`, `det_model=snr_mchirp_binned`, `weight_mode=inv_sampling_pdf`):
+- Output dir: `outputs/gate2_sbc_matrix_20260204_043303UTC`
+- 32 replicates × 25 events/replicate, \(H_0\in[40,100]\) (121 grid points), `z_max=0.62`
+
+Aggregate SBC metrics (lower KS statistic is better; Uniform would have mean ~0.5 and small KS):
+
+| label | inj_sampling_pdf_dist | inj_sampling_pdf_mass_frame | u_h0_on_mean | u_h0_on_ks |
+|---|---|---|---:|---:|
+| A (default) | z | source | 0.34696 | 0.25702 |
+| B | dL | source | 0.30871 | 0.31860 |
+| C | z | detector | 0.21804 | 0.46242 |
+| D | dL | detector | 0.20795 | 0.43914 |
+
+Conclusion:
+- The “missing Jacobian / wrong sampling_pdf coordinates” hypothesis **does not fix** Gate‑2 SBC under population weighting.
+- In this proxy, the injection file is **most consistent with** `sampling_pdf` already being in **(z, source-frame masses)** (because alternative interpretations make SBC worse).
+
+### Weight‑mode sanity check
+
+We also verified that turning off injection sampling-pdf correction is not viable:
+- Output dir: `outputs/gate2_sbc_weightmode_20260204_044617UTC`
+- `weight_mode=none` gives extremely non‑uniform SBC (`u_h0_on_mean≈0.84`, `u_h0_on_ks≈0.58`).
+
+So `weight_mode=inv_sampling_pdf` is required for any serious selection-corrected work.
+
+## Updated next step (what to debug now)
+
+Since the sampling‑pdf convention isn’t the root cause, the remaining likely sources of Gate‑2 “feels broken” behavior are:
+
+- **Selection vs population bookkeeping**: whether an \(H_0^{-3}\) “volume scaling” factor is applied consistently (or double-counted / omitted) between the z prior and the selection term.
+- **Event-term vs selection-term mismatch**: SBC should be decomposed into “selection‑off” vs “selection‑on” (logL_data vs logL_total) to see which part induces bias.
+- **Detectability proxy limitations**: miscalibrated `p_det(SNR, Mchirp_det)` shape can dominate totals even when α(H0) matches external oracles.
+
+Concrete immediate work item:
+- extend the suite tables to report both `u_h0_off_*` (selection‑off) and `u_h0_on_*` so we can localize the miscalibration to the event term or the selection term.

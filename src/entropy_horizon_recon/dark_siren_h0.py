@@ -997,6 +997,8 @@ def _injection_weights(
     pop_m_peak_frac: float,
     z_max: float,
     inj_mass_pdf_coords: Literal["m1m2", "m1q"] = "m1m2",
+    inj_sampling_pdf_dist: Literal["z", "dL"] = "z",
+    inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Return filtered (z, dL_fid, snr, found_ifar, chirp_mass_det, w) arrays for alpha(H0)."""
     z = np.asarray(injections.z, dtype=float)
@@ -1054,6 +1056,54 @@ def _injection_weights(
         if not np.all(np.isfinite(pdf)) or np.any(pdf <= 0.0):
             raise ValueError("sampling_pdf contains non-finite or non-positive values.")
         w = w / pdf
+
+        # Some injection releases provide `sampling_pdf` in coordinates other than our population
+        # parameterization (z, m1_source, m2_source). Support common conventions by applying the
+        # relevant Jacobians so that `w ∝ 1/p_inj` is interpreted in the (z, m_source) measure.
+        inj_sampling_pdf_dist = str(inj_sampling_pdf_dist)
+        if inj_sampling_pdf_dist == "z":
+            pass
+        elif inj_sampling_pdf_dist == "dL":
+            # Convert from a density in dL to a density in z:
+            #   p_inj(z) dz = p_inj(dL) dL = p_inj(dL) (dL/dz) dz
+            # => p_inj(z) = p_inj(dL) (dL/dz)
+            # Since we work with w ∝ 1/p_inj, we must divide by dL/dz.
+            H0_ref = 67.7  # km/s/Mpc (only sets an overall scale; cancels in alpha ratios)
+            om0 = 0.31
+            c = 299792.458  # km/s
+            z_grid = np.linspace(0.0, float(np.max(z)), 5001)
+            Ez = np.sqrt(om0 * (1.0 + z_grid) ** 3 + (1.0 - om0))
+            invEz = 1.0 / np.clip(Ez, 1e-30, np.inf)
+            dc = (c / H0_ref) * np.cumsum(np.concatenate([[0.0], 0.5 * (invEz[1:] + invEz[:-1]) * np.diff(z_grid)]))
+            Dc = np.interp(z, z_grid, dc)
+            Ez_z = np.interp(z, z_grid, Ez)
+            dDc_dz = c / (H0_ref * np.clip(Ez_z, 1e-30, np.inf))
+            ddL_dz = Dc + (1.0 + z) * dDc_dz
+            if not np.all(np.isfinite(ddL_dz)) or np.any(ddL_dz <= 0.0):
+                raise ValueError("Non-finite/non-positive dL/dz encountered while converting sampling_pdf from dL to z.")
+            w = w / ddL_dz
+        else:
+            raise ValueError("Unknown inj_sampling_pdf_dist (expected 'z' or 'dL').")
+
+        inj_sampling_pdf_mass_frame = str(inj_sampling_pdf_mass_frame)
+        if inj_sampling_pdf_mass_frame == "source":
+            pass
+        elif inj_sampling_pdf_mass_frame == "detector":
+            # If `sampling_pdf` was defined in detector-frame mass coordinates (m_det = (1+z) m_src),
+            # convert it to the source-frame mass measure.
+            #
+            # For component-mass coordinates:
+            #   dm1_det dm2_det = (1+z)^2 dm1_src dm2_src
+            # For (m1,q) coordinates:
+            #   dm1_det dq = (1+z) dm1_src dq
+            if inj_mass_pdf_coords == "m1m2":
+                w = w / np.clip(1.0 + z, 1e-12, np.inf) ** 2
+            elif inj_mass_pdf_coords == "m1q":
+                w = w / np.clip(1.0 + z, 1e-12, np.inf)
+            else:
+                raise ValueError("Unknown inj_mass_pdf_coords (expected 'm1m2' or 'm1q').")
+        else:
+            raise ValueError("Unknown inj_sampling_pdf_mass_frame (expected 'source' or 'detector').")
     else:
         raise ValueError("Unknown weight_mode.")
 
@@ -1178,6 +1228,8 @@ def _alpha_h0_grid_from_injections(
     pop_m_peak_sigma: float = 5.0,
     pop_m_peak_frac: float = 0.1,
     inj_mass_pdf_coords: Literal["m1m2", "m1q"] = "m1m2",
+    inj_sampling_pdf_dist: Literal["z", "dL"] = "z",
+    inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source",
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Compute alpha(H0) on a grid using the same injection-rescaling proxy approach."""
     z, dL_fid, snr, found, chirp_mass_det, w = _injection_weights(
@@ -1196,6 +1248,8 @@ def _alpha_h0_grid_from_injections(
         pop_m_peak_frac=pop_m_peak_frac,
         z_max=z_max,
         inj_mass_pdf_coords=inj_mass_pdf_coords,
+        inj_sampling_pdf_dist=inj_sampling_pdf_dist,
+        inj_sampling_pdf_mass_frame=inj_sampling_pdf_mass_frame,
     )
 
     det = _calibrate_detection_model_from_snr_and_found(
@@ -1236,6 +1290,8 @@ def _alpha_h0_grid_from_injections(
         "snr_binned_nbins": int(snr_binned_nbins),
         "mchirp_binned_nbins": int(mchirp_binned_nbins),
         "weight_mode": str(weight_mode),
+        "inj_sampling_pdf_dist": str(inj_sampling_pdf_dist),
+        "inj_sampling_pdf_mass_frame": str(inj_sampling_pdf_mass_frame),
         "pop_z_mode": str(pop_z_mode),
         "pop_z_k": float(pop_z_powerlaw_k),
         "pop_mass_mode": str(pop_mass_mode),
@@ -2186,6 +2242,8 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
     pop_m_peak_sigma: float = 5.0,
     pop_m_peak_frac: float = 0.1,
     inj_mass_pdf_coords: Literal["m1m2", "m1q"] = "m1m2",
+    inj_sampling_pdf_dist: Literal["z", "dL"] = "z",
+    inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source",
     importance_smoothing: Literal["none", "truncate", "psis"] = "none",
     importance_truncate_tau: float | None = None,
     event_qc_mode: Literal["fail", "skip"] = "skip",
@@ -2234,6 +2292,9 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
             pop_m_peak_sigma=float(pop_m_peak_sigma),
             pop_m_peak_frac=float(pop_m_peak_frac),
             z_max=float(z_max),
+            inj_mass_pdf_coords=inj_mass_pdf_coords,
+            inj_sampling_pdf_dist=inj_sampling_pdf_dist,
+            inj_sampling_pdf_mass_frame=inj_sampling_pdf_mass_frame,
         )
         det_model_obj = _calibrate_detection_model_from_snr_and_found(
             snr_net_opt=_snr,
@@ -2596,6 +2657,8 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
             pop_m_peak_sigma=float(pop_m_peak_sigma),
             pop_m_peak_frac=float(pop_m_peak_frac),
             inj_mass_pdf_coords=inj_mass_pdf_coords,
+            inj_sampling_pdf_dist=inj_sampling_pdf_dist,
+            inj_sampling_pdf_mass_frame=inj_sampling_pdf_mass_frame,
         )
         alpha_grid = np.asarray(alpha, dtype=float)
         alpha_meta = meta
@@ -2659,6 +2722,8 @@ def compute_gr_h0_posterior_grid_hierarchical_pe(
         "include_pdet_in_event_term": bool(include_pdet_in_event_term),
         "pop_z_include_h0_volume_scaling": bool(pop_z_include_h0_volume_scaling),
         "inj_mass_pdf_coords": str(inj_mass_pdf_coords),
+        "inj_sampling_pdf_dist": str(inj_sampling_pdf_dist),
+        "inj_sampling_pdf_mass_frame": str(inj_sampling_pdf_mass_frame),
         "selection_include_h0_volume_scaling": bool(selection_include_h0_volume_scaling),
         "importance_smoothing": str(importance_smoothing),
         "importance_truncate_tau": float(importance_truncate_tau) if importance_truncate_tau is not None else None,

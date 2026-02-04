@@ -85,6 +85,21 @@ class InjectionRecoveryConfig:
     # importance weights that target a population defined in (m1,q) must include an extra 1/m1.
     inj_mass_pdf_coords: Literal["m1m2", "m1q"] = "m1m2"
 
+    # Coordinate convention for the injection `sampling_pdf` distance/redshift variables.
+    #
+    # Some O3 sensitivity injection releases define `sampling_pdf` in terms of luminosity distance
+    # rather than redshift. In that case, converting to the population's z-measure introduces a
+    # Jacobian factor dL/dz.
+    inj_sampling_pdf_dist: Literal["z", "dL"] = "z"
+
+    # Mass-frame convention for the injection `sampling_pdf`.
+    #
+    # If `sampling_pdf` is defined in detector-frame masses (m_det = (1+z) m_src), converting to a
+    # source-frame population introduces a Jacobian:
+    #   (m1m2): dm1_det dm2_det = (1+z)^2 dm1_src dm2_src
+    #   (m1q):  dm1_det dq     = (1+z)   dm1_src dq
+    inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source"
+
     # Whether to include p_det(dL, masses) inside the hierarchical PE event term.
     #
     # The standard detected-event hierarchical likelihood uses a selection correction alpha(Λ)
@@ -214,6 +229,8 @@ def compute_selection_alpha_h0_grid_for_cfg(
         pop_m_peak_sigma=float(cfg.pop_m_peak_sigma),
         pop_m_peak_frac=float(cfg.pop_m_peak_frac),
         inj_mass_pdf_coords=str(cfg.inj_mass_pdf_coords),  # type: ignore[arg-type]
+        inj_sampling_pdf_dist=str(cfg.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_frame=str(cfg.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
     )
     return np.asarray(alpha, dtype=float), dict(meta)
 
@@ -404,6 +421,35 @@ def generate_synthetic_detected_events_from_injections(
         if not np.all(np.isfinite(pdf)) or np.any(pdf <= 0.0):
             raise ValueError("sampling_pdf contains non-finite/non-positive values; cannot sample events.")
         w = w / pdf
+
+        # Apply Jacobians to interpret `sampling_pdf` in the (z, m_source) measure when required.
+        if str(cfg.inj_sampling_pdf_dist) == "dL":
+            H0_ref = 67.7  # km/s/Mpc (overall scale cancels in normalized weights)
+            om0 = 0.31
+            c = 299792.458
+            z_grid = np.linspace(0.0, float(np.max(z)), 5001)
+            Ez = np.sqrt(om0 * (1.0 + z_grid) ** 3 + (1.0 - om0))
+            invEz = 1.0 / np.clip(Ez, 1e-30, np.inf)
+            dc = (c / H0_ref) * np.cumsum(np.concatenate([[0.0], 0.5 * (invEz[1:] + invEz[:-1]) * np.diff(z_grid)]))
+            Dc = np.interp(z, z_grid, dc)
+            Ez_z = np.interp(z, z_grid, Ez)
+            dDc_dz = c / (H0_ref * np.clip(Ez_z, 1e-30, np.inf))
+            ddL_dz = Dc + (1.0 + z) * dDc_dz
+            if not np.all(np.isfinite(ddL_dz)) or np.any(ddL_dz <= 0.0):
+                raise ValueError("Non-finite/non-positive dL/dz encountered while converting sampling_pdf from dL to z.")
+            w = w / ddL_dz
+        elif str(cfg.inj_sampling_pdf_dist) != "z":
+            raise ValueError("Unknown inj_sampling_pdf_dist (expected 'z' or 'dL').")
+
+        if str(cfg.inj_sampling_pdf_mass_frame) == "detector":
+            if str(cfg.inj_mass_pdf_coords) == "m1m2":
+                w = w / np.clip(1.0 + z, 1e-12, np.inf) ** 2
+            elif str(cfg.inj_mass_pdf_coords) == "m1q":
+                w = w / np.clip(1.0 + z, 1e-12, np.inf)
+            else:
+                raise ValueError("Unknown inj_mass_pdf_coords (expected 'm1m2' or 'm1q').")
+        elif str(cfg.inj_sampling_pdf_mass_frame) != "source":
+            raise ValueError("Unknown inj_sampling_pdf_mass_frame (expected 'source' or 'detector').")
 
     if cfg.pop_mass_mode != "none" and cfg.weight_mode == "inv_sampling_pdf":
         if cfg.inj_mass_pdf_coords == "m1m2":
@@ -806,6 +852,8 @@ def run_injection_recovery_gr_h0(
             pop_m_peak_frac=float(cfg.pop_m_peak_frac),
             z_max=float(cfg.z_max),
             inj_mass_pdf_coords=str(cfg.inj_mass_pdf_coords),  # type: ignore[arg-type]
+            inj_sampling_pdf_dist=str(cfg.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+            inj_sampling_pdf_mass_frame=str(cfg.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
         )
         det_model_obj = _calibrate_detection_model_from_snr_and_found(
             snr_net_opt=_snr,

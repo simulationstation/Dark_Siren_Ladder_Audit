@@ -186,6 +186,18 @@ def main() -> int:
         help="Mass-coordinate convention for injection sampling_pdf (default m1m2).",
     )
     ap.add_argument(
+        "--inj-sampling-pdf-dist",
+        choices=["z", "dL"],
+        default="z",
+        help="Distance/redshift coordinate used by injection sampling_pdf: 'z' means sampling_pdf is a density in z; 'dL' means density in luminosity distance and will be converted using dL/dz (default z).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-frame",
+        choices=["source", "detector"],
+        default="source",
+        help="Mass-frame used by injection sampling_pdf: 'source' means source-frame component masses; 'detector' means detector-frame masses and will be converted using (1+z) Jacobians (default source).",
+    )
+    ap.add_argument(
         "--selection-include-h0-volume-scaling",
         action="store_true",
         help="Use an xi-style normalization by including an H0^{-3} factor in the selection term (audit/debug knob).",
@@ -358,6 +370,8 @@ def main() -> int:
         pop_m_peak_frac=float(args.pop_m_peak_frac),
         pop_z_include_h0_volume_scaling=bool(args.pop_z_include_h0_volume_scaling),
         inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+        inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
         selection_include_h0_volume_scaling=bool(args.selection_include_h0_volume_scaling),
         event_qc_mode=str(args.event_qc_mode),  # type: ignore[arg-type]
         event_min_finite_frac=float(args.event_min_finite_frac),
@@ -408,6 +422,8 @@ def main() -> int:
             pop_m_peak_frac=float(args.pop_m_peak_frac),
             pop_z_include_h0_volume_scaling=bool(args.pop_z_include_h0_volume_scaling),
             inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+            inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+            inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
             selection_include_h0_volume_scaling=bool(args.selection_include_h0_volume_scaling),
             event_qc_mode=str(args.event_qc_mode),  # type: ignore[arg-type]
             event_min_finite_frac=float(args.event_min_finite_frac),
