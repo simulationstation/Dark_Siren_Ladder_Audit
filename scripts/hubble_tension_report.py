@@ -28,6 +28,12 @@ def _load_gate2_json(path: Path) -> tuple[np.ndarray, np.ndarray]:
         if "posterior" in obj:
             p = as_1d_finite_array(obj["posterior"], name="posterior")
             return H0, p
+        # Selection-uncertainty runner JSON (convenience): accept the marginalized posterior field directly.
+        if "posterior_sel_marginalized" in obj:
+            p = as_1d_finite_array(obj["posterior_sel_marginalized"], name="posterior_sel_marginalized")
+            if p.shape != H0.shape:
+                raise ValueError("posterior_sel_marginalized must match H0_grid.")
+            return H0, p
         if "logL_H0_rel" in obj:
             logL = as_1d_finite_array(obj["logL_H0_rel"], name="logL_H0_rel")
             if logL.shape != H0.shape:
