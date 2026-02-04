@@ -107,3 +107,60 @@ def test_alpha_h0_grid_pdet_marginalized_q_binned_smoke() -> None:
     assert np.all(np.isfinite(draws))
     assert np.all(draws > 0.0)
     assert np.all(draws <= 1.0)
+
+
+def test_alpha_h0_grid_pdet_marginalized_draws_mean_near_nominal_for_sparse_bins() -> None:
+    # Regression test: when p_det bins/cells have negligible effective injection counts, the uncertainty
+    # model should shrink draws toward the calibrated baseline p_det (not toward 0.5).
+    #
+    # This ensures alpha(H0) draws remain centered near the nominal alpha(H0), especially at low H0
+    # where many injections fall into low-SNR bins.
+    rng = np.random.default_rng(2)
+    n = 250
+    z = rng.uniform(0.01, 0.6, size=n)
+    dL = 1_000.0 * (1.0 + z)
+    snr = rng.lognormal(mean=2.0, sigma=0.7, size=n)
+    found = snr > 7.5
+    m1 = rng.uniform(5.0, 80.0, size=n)
+    m2 = rng.uniform(5.0, 80.0, size=n)
+    m2 = np.minimum(m1, m2)
+
+    inj = O3InjectionSet(
+        path="<synthetic>",
+        ifar_threshold_yr=1.0,
+        z=z,
+        dL_mpc_fid=dL,
+        snr_net_opt=snr,
+        found_ifar=found,
+        sampling_pdf=np.ones_like(z),
+        mixture_weight=np.ones_like(z),
+        m1_source=m1,
+        m2_source=m2,
+        total_generated=n,
+        analysis_time_s=1.0,
+    )
+
+    H0_grid = np.array([40.0, 70.0, 100.0], dtype=float)
+    meta, draws = compute_alpha_h0_grid_pdet_marginalized(
+        injections=inj,
+        H0_grid=H0_grid,
+        omega_m0=0.31,
+        omega_k0=0.0,
+        z_max=0.62,
+        det_model="snr_binned",
+        snr_binned_nbins=60,
+        weight_mode="none",
+        pop_z_mode="none",
+        pop_mass_mode="none",
+        n_pdet_draws=200,
+        pdet_pseudocount=1.0,
+        pdet_draw_seed=0,
+    )
+
+    alpha0 = np.asarray(meta["alpha_grid_nominal"], dtype=float)
+    mean_draw = np.mean(np.asarray(draws, dtype=float), axis=0)
+
+    # Loose tolerance: this is a stochastic draw-based check, but should catch gross mis-centering.
+    assert np.all(np.isfinite(alpha0))
+    assert np.all(np.isfinite(mean_draw))
+    assert float(np.max(np.abs(mean_draw - alpha0))) < 0.15

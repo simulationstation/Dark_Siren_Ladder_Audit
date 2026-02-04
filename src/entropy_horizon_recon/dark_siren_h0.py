@@ -1515,8 +1515,13 @@ def compute_alpha_h0_grid_pdet_marginalized(
 
     This models the detection-probability table p_det as uncertain due to finite injection statistics.
     For each bin/cell we compute an effective sample size and draw p_det values from an independent
-    Beta distribution, enforcing monotonicity in SNR per draw. We then propagate that into alpha(H0)
-    via the precomputed injection-weight distribution across bins at each H0.
+    Beta distribution, enforcing monotonicity in SNR per draw. Importantly, the Beta draw is
+    **shrunk toward the calibrated baseline p_det table** (used as a prior mean), so bins/cells with
+    negligible effective injection counts do not default to an uninformative Beta(1,1) mean of 0.5
+    (which would spuriously inflate alpha(H0) at low H0 where many injections fall in low-SNR bins).
+
+    We then propagate the drawn p_det tables into alpha(H0) via the precomputed injection-weight
+    distribution across bins at each H0.
 
     This is intended as an *audit* tool to quantify whether H0 inference is selection-limited.
     It does not model full pipeline systematics (e.g. waveform systematics, search pipeline changes).
@@ -1605,11 +1610,27 @@ def compute_alpha_h0_grid_pdet_marginalized(
     # Bin assignments for calibration (fiducial snr).
     snr_bin_fid = np.clip(np.digitize(snr, snr_edges) - 1, 0, n_snr_bins - 1)
 
+    # Baseline calibrated p_det table (used as a prior mean for uncertainty draws).
+    if det_model == "snr_binned":
+        if det.snr_binned_pdet is None:
+            raise ValueError("Detection model missing snr_binned_pdet.")
+        p0 = np.asarray(det.snr_binned_pdet, dtype=float)
+    elif det_model == "snr_mchirp_binned":
+        if det.snr_mchirp_pdet is None:
+            raise ValueError("Detection model missing snr_mchirp_pdet.")
+        p0 = np.asarray(det.snr_mchirp_pdet, dtype=float)
+    else:
+        if det.snr_mchirp_q_pdet is None:
+            raise ValueError("Detection model missing snr_mchirp_q_pdet.")
+        p0 = np.asarray(det.snr_mchirp_q_pdet, dtype=float)
+
     # Per-cell effective counts for Beta draws.
     # Use Kish effective sample size: n_eff = (sum w)^2 / sum w^2.
     w = np.asarray(w, dtype=float)
     found_f = found.astype(float)
     if det_model == "snr_binned":
+        if p0.shape != (n_snr_bins,):
+            raise ValueError("Baseline p_det shape mismatch for snr_binned.")
         sum_w = np.bincount(snr_bin_fid, weights=w, minlength=n_snr_bins).astype(float)
         sum_w2 = np.bincount(snr_bin_fid, weights=w * w, minlength=n_snr_bins).astype(float)
         sum_w_found = np.bincount(snr_bin_fid, weights=w * found_f, minlength=n_snr_bins).astype(float)
@@ -1617,12 +1638,17 @@ def compute_alpha_h0_grid_pdet_marginalized(
         p_hat = np.divide(sum_w_found, np.clip(sum_w, 1e-300, np.inf))
         n_eff = np.divide(sum_w * sum_w, np.clip(sum_w2, 1e-300, np.inf))
         # Beta params (independent by bin; enforce monotone after draw).
-        a0 = pc + n_eff * np.clip(p_hat, 0.0, 1.0)
-        b0 = pc + n_eff * (1.0 - np.clip(p_hat, 0.0, 1.0))
-        a0 = np.clip(a0, pc, np.inf)
-        b0 = np.clip(b0, pc, np.inf)
+        # Prior mean is the calibrated baseline p_det; prior strength is pdet_pseudocount.
+        p0c = np.clip(p0, 1e-6, 1.0 - 1e-6)
+        p_hat_c = np.clip(p_hat, 0.0, 1.0)
+        a0 = pc * p0c + n_eff * p_hat_c
+        b0 = pc * (1.0 - p0c) + n_eff * (1.0 - p_hat_c)
+        a0 = np.clip(a0, 1e-6, np.inf)
+        b0 = np.clip(b0, 1e-6, np.inf)
     elif det_model == "snr_mchirp_binned":
         assert mc_bin is not None
+        if p0.shape != (n_mc_bins, n_snr_bins):
+            raise ValueError("Baseline p_det shape mismatch for snr_mchirp_binned.")
         # Flatten (mc,snr) to 1D bin for bincount.
         flat_fid = mc_bin * n_snr_bins + snr_bin_fid
         n_cells = n_mc_bins * n_snr_bins
@@ -1631,13 +1657,17 @@ def compute_alpha_h0_grid_pdet_marginalized(
         sum_w_found = np.bincount(flat_fid, weights=w * found_f, minlength=n_cells).astype(float)
         p_hat = np.divide(sum_w_found, np.clip(sum_w, 1e-300, np.inf)).reshape((n_mc_bins, n_snr_bins))
         n_eff = np.divide(sum_w * sum_w, np.clip(sum_w2, 1e-300, np.inf)).reshape((n_mc_bins, n_snr_bins))
-        a0 = pc + n_eff * np.clip(p_hat, 0.0, 1.0)
-        b0 = pc + n_eff * (1.0 - np.clip(p_hat, 0.0, 1.0))
-        a0 = np.clip(a0, pc, np.inf)
-        b0 = np.clip(b0, pc, np.inf)
+        p0c = np.clip(p0, 1e-6, 1.0 - 1e-6)
+        p_hat_c = np.clip(p_hat, 0.0, 1.0)
+        a0 = pc * p0c + n_eff * p_hat_c
+        b0 = pc * (1.0 - p0c) + n_eff * (1.0 - p_hat_c)
+        a0 = np.clip(a0, 1e-6, np.inf)
+        b0 = np.clip(b0, 1e-6, np.inf)
     else:
         assert det_model == "snr_mchirp_q_binned"
         assert mc_bin is not None and q_bin is not None
+        if p0.shape != (n_mc_bins, n_q_bins, n_snr_bins):
+            raise ValueError("Baseline p_det shape mismatch for snr_mchirp_q_binned.")
         flat_fid = (mc_bin * n_q_bins + q_bin) * n_snr_bins + snr_bin_fid
         n_cells = n_mc_bins * n_q_bins * n_snr_bins
         sum_w = np.bincount(flat_fid, weights=w, minlength=n_cells).astype(float)
@@ -1645,10 +1675,12 @@ def compute_alpha_h0_grid_pdet_marginalized(
         sum_w_found = np.bincount(flat_fid, weights=w * found_f, minlength=n_cells).astype(float)
         p_hat = np.divide(sum_w_found, np.clip(sum_w, 1e-300, np.inf)).reshape((n_mc_bins, n_q_bins, n_snr_bins))
         n_eff = np.divide(sum_w * sum_w, np.clip(sum_w2, 1e-300, np.inf)).reshape((n_mc_bins, n_q_bins, n_snr_bins))
-        a0 = pc + n_eff * np.clip(p_hat, 0.0, 1.0)
-        b0 = pc + n_eff * (1.0 - np.clip(p_hat, 0.0, 1.0))
-        a0 = np.clip(a0, pc, np.inf)
-        b0 = np.clip(b0, pc, np.inf)
+        p0c = np.clip(p0, 1e-6, 1.0 - 1e-6)
+        p_hat_c = np.clip(p_hat, 0.0, 1.0)
+        a0 = pc * p0c + n_eff * p_hat_c
+        b0 = pc * (1.0 - p0c) + n_eff * (1.0 - p_hat_c)
+        a0 = np.clip(a0, 1e-6, np.inf)
+        b0 = np.clip(b0, 1e-6, np.inf)
 
     # Precompute mapping weights per cell for each H0: Wcell[:, j] = sum_{inj in cell(H0)} w_i.
     fz = dist_cache.f(z)
