@@ -230,3 +230,30 @@ In the baseline `popz0_sel0` run (above), these aggregates show:
 - `slope_logL_total_on_mean ≈ +0.15` (net preference still drifts to higher \(H_0\))
 
 This matches the qualitative SBC symptom: \(u\) collapses toward 0 because the selection-on posterior is still typically shifted high relative to truth.
+
+## Toy closed-loop sanity check (no injection file)
+
+To isolate whether the remaining SBC failure is coming from the **event-term bookkeeping** (hierarchical PE reweighting + mass/z Jacobians) or from the **injection-weighting layer** (interpreting `sampling_pdf`, etc.), we ran a pure toy generator that:
+
+- samples \(z\) and source-frame masses directly from the same population family used in the inference,
+- applies a simple, known \(p_\mathrm{det}(\mathrm{SNR})\) (logistic) to generate detected events, and
+- computes \(\alpha(H_0)\) via Monte Carlo under the same toy model (no injection file).
+
+Output bundle:
+- `outputs/gate2_toy_sbc_isolation_20260204_071440UTC`
+
+Common settings:
+- 256 replicates × 25 detected events/replicate
+- \(H_0^\star\sim \mathrm{Uniform}[40,100]\) (121 grid points)
+- `pe_n_samples=2000` (synthetic PE), `alpha_n_mc=200000` (toy alpha MC)
+
+Toy SBC aggregates:
+
+| case | pop_mass_mode | u_h0_on_mean | u_h0_on_ks |
+|---|---|---:|---:|
+| `powerlaw_q` | powerlaw_q | 0.5501 | 0.0938 |
+| `peak_smooth` | powerlaw_peak_q_smooth | 0.5554 | 0.0879 |
+
+Interpretation:
+- The toy suites are **much closer to calibrated** than the injection‑file suites under the same broad prior stress test (which produce \(u\) means \(\sim 0.33\) under popZ+mass).
+- This strongly points to the remaining “Gate‑2 SBC feels broken” behavior being dominated by the **injection-weighting / selection-proxy layer** (i.e. how we use `sampling_pdf` + injections), not a fundamental bug in the hierarchical PE event term.
