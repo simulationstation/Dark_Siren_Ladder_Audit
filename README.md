@@ -218,3 +218,64 @@ Event-wise (mode=`none`):
 - total (data+selection): μ wins in 25/33 events
 
 Takeaway: the “ghost” pattern persists under a more selection-realistic proxy — the data term still prefers GR, while selection bookkeeping can dominate and flip the sign of the total.
+
+### 8) “Ghost” robustness checks (injection swaps + LVK population draws + synthetic reproduction) (2026-02-04)
+
+We ran a decisive bundle of robustness checks to see if the μ-vs-GR “ghost flip” could be blamed on a particular
+injection file, sensitivity segment, or a brittle choice of population hyperparameters — and then we built a
+controlled synthetic example that reproduces the flip under GR truth (when PE distance information is weak).
+
+- Output dir: `outputs/workcycle_decisive_checks_20260203_235923UTC/`
+- Aggregated summaries:
+  - `outputs/workcycle_decisive_checks_20260203_235923UTC/decisive_checks_summary.csv`
+  - `outputs/workcycle_decisive_checks_20260203_235923UTC/decisive_checks_summary.json`
+
+#### A) Injection file / segment swap checks (real data)
+
+All runs below use the same 33-event set and PE cache as `M0_start202` and the same remembered population knobs
+(`comoving_uniform + powerlaw_peak_q_smooth`) while swapping the selection-injection source.
+
+Injection sources tested:
+- Baseline O3b segment: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5`
+- GWTC-3 O3a BBHpop injection set: `data/cache/gw/zenodo/11254021/extracted/GWTC-3-population-data/injections/o3a_bbhpop_inj_info.hdf`
+- Full O3 sensitivity file: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12.hdf5`
+- O3a sensitivity segment: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1238166018-15843600.hdf5`
+
+Result (robust across all injection swaps):
+- \(\Delta \mathrm{LPD}_{\rm data} \approx -2.45\) to \(-2.66\) (data term prefers GR)
+- \(\Delta \mathrm{LPD}_{\rm sel} \approx +4.87\) to \(+5.34\) (selection term prefers μ)
+- \(\Delta \mathrm{LPD}_{\rm total} \approx +2.21\) to \(+2.69\) (net preference flips to μ)
+
+Event-wise (typical ranges across these runs, mode=`none`):
+- data term: GR wins in ~31–33 / 33 events
+- total (data+selection): μ wins in ~25–28 / 33 events
+
+#### B) Population anchoring via LVK hyperposterior draws (real data)
+
+We then repeated the real-data scoring using 5 independent draws from the LVK GWTC‑3 O3a population hyperposterior
+(PowerLaw+Peak + powerlaw redshift) to anchor the population hyperparameters to “best available” community inference:
+
+- LVK hyperposterior JSON:
+  `data/cache/gw/zenodo/11254021/extracted/GWTC-3-population-data/o3a_population_data_release/Population_Samples/default/o1o2o3_mass_c_iid_mag_two_comp_iid_tilt_powerlaw_redshift_result.json`
+
+Result: the same sign pattern persists under LVK-ish hyperparameters:
+- \(\Delta \mathrm{LPD}_{\rm data} < 0\) (GR-favoring)
+- \(\Delta \mathrm{LPD}_{\rm sel} > 0\) (μ-favoring)
+- \(\Delta \mathrm{LPD}_{\rm total} > 0\) (net μ-favoring)
+
+#### C) Controlled synthetic reproduction of the “ghost flip”
+
+We built two synthetic injection-recovery-style demos to show when the flip is expected:
+
+- `ghost_simulation` (informative PE): generates synthetic PE with “normal-ish” distance widths.
+  - Outcome: data term dominates; total stays GR (no flip).
+- `ghost_simulation_weakdata` (weak PE distances): generates synthetic PE with very broad distance likelihoods
+  (prior-dominated), so selection can dominate.
+  - Outcome: reproduces the ghost flip under GR truth:
+    - \(\Delta \mathrm{LPD}_{\rm data} \approx -0.714\)
+    - \(\Delta \mathrm{LPD}_{\rm sel} \approx +6.220\)
+    - \(\Delta \mathrm{LPD}_{\rm total} \approx +5.506\)
+    - wins (mode=`none`, 33 events): data term GR wins 27/33, but total μ wins 32/33
+
+Takeaway: the flip is not an “injection file artifact”; it is a predictable regime change — when PE distance information is
+weak enough, the selection normalization term can dominate the total score and drive μ-vs-GR “wins” even though the event data term prefers GR.
