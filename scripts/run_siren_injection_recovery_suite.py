@@ -628,6 +628,19 @@ def main() -> int:
         u_h0_on_ks = float("nan")
         u_h0_on_mean = float("nan")
 
+    u_h0_off = np.asarray([_safe_float(r.get("u_h0_off")) for r in rows], dtype=float)
+    u_h0_off = u_h0_off[np.isfinite(u_h0_off)]
+    if u_h0_off.size:
+        u_sorted = np.sort(np.clip(u_h0_off, 0.0, 1.0))
+        i = np.arange(1, u_sorted.size + 1, dtype=float)
+        d_plus = float(np.max(i / u_sorted.size - u_sorted))
+        d_minus = float(np.max(u_sorted - (i - 1.0) / u_sorted.size))
+        u_h0_off_ks = float(max(d_plus, d_minus))
+        u_h0_off_mean = float(np.mean(u_sorted))
+    else:
+        u_h0_off_ks = float("nan")
+        u_h0_off_mean = float("nan")
+
     pp_all_dL_arr = np.asarray(pp_all_dL, dtype=float)
     if pp_all_dL_arr.size:
         pp_all_dL_sorted = np.sort(pp_all_dL_arr)
@@ -659,6 +672,9 @@ def main() -> int:
         "H0_map_at_edge_off_n": int(np.sum(edge_off)),
         "coverage_68_on": cov68,
         "coverage_95_on": cov95,
+        "u_h0_off_n": int(u_h0_off.size),
+        "u_h0_off_mean": float(u_h0_off_mean),
+        "u_h0_off_ks": float(u_h0_off_ks),
         "u_h0_on_n": int(u_h0_on.size),
         "u_h0_on_mean": float(u_h0_on_mean),
         "u_h0_on_ks": float(u_h0_on_ks),
@@ -749,6 +765,29 @@ def main() -> int:
             plt.title("Synthetic PE distance P–P histogram")
             plt.tight_layout()
             plt.savefig(fig_dir / "pp_dL_hist.png", dpi=160)
+            plt.close()
+
+        if u_h0_off.size:
+            plt.figure(figsize=(4.8, 4.8))
+            u = np.sort(u_h0_off)
+            n_u = int(u.size)
+            plt.plot(u, (np.arange(1, n_u + 1) / n_u), lw=1.8, label="empirical")
+            plt.plot([0, 1], [0, 1], color="k", lw=1.0, ls="--", label="uniform")
+            plt.xlabel("u = CDF(H0_true)  (selection OFF)")
+            plt.ylabel("empirical CDF")
+            plt.title("SBC-style H0 diagnostic (selection OFF)")
+            plt.legend(frameon=False)
+            plt.tight_layout()
+            plt.savefig(fig_dir / "sbc_u_h0_off_cdf.png", dpi=160)
+            plt.close()
+
+            plt.figure(figsize=(7.2, 4.0))
+            plt.hist(np.clip(u_h0_off, 0.0, 1.0), bins=20, range=(0, 1), alpha=0.85)
+            plt.xlabel("u = CDF(H0_true)  (selection OFF)")
+            plt.ylabel("count")
+            plt.title("SBC u-histogram (selection OFF)")
+            plt.tight_layout()
+            plt.savefig(fig_dir / "sbc_u_h0_off_hist.png", dpi=160)
             plt.close()
 
         if u_h0_on.size:
