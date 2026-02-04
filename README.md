@@ -45,6 +45,23 @@ The GR \(H_0\) selection-on control is sensitive to population assumptions. For 
   --lvk-n-draws 200
 ```
 
+## Hubble tension investigator (audit-mode)
+
+Given any Gate‑2 JSON output, you can produce a concise “tension-style” summary (threshold probabilities + an optional Planck-like vs SH0ES-like Bayes factor under Gaussian priors):
+
+```bash
+./.venv/bin/python scripts/hubble_tension_report.py outputs/<RUN>/json/gr_h0_selection_on_inv_sampling_pdf.json
+```
+
+To propagate a basic finite-injection uncertainty model for the selection factor \(\alpha(H_0)\) (via Beta draws over the binned \(p_{\rm det}\) table) into the GR \(H_0\) posterior:
+
+```bash
+./.venv/bin/python scripts/run_siren_gate2_gr_h0_selection_uncertainty.py \
+  --gate2-json outputs/<RUN>/json/gr_h0_selection_on_inv_sampling_pdf.json \
+  --selection-injections-hdf data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5 \
+  --save-alpha-draws-npz
+```
+
 ## Run log (GR vs mu)
 
 Many siren tests in this repo score **mu (entropy-modified)** vs **GR** using a total ΔLPD metric. To keep comparisons auditable across many detached runs, build a single CSV from finished output folders:
