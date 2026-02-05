@@ -88,6 +88,30 @@ def main() -> int:
         default="data/cache/gw/zenodo/11254021/extracted/GWTC-3-population-data/injections/o3a_bbhpop_inj_info.hdf",
         help="Injection file for ladder (used for selection calibration and event sampling).",
     )
+    ap.add_argument(
+        "--inj-mass-pdf-coords",
+        choices=["m1m2", "m1q"],
+        default="m1m2",
+        help="Mass-coordinate convention for injection sampling_pdf (default m1m2).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-dist",
+        choices=["z", "dL", "log_dL"],
+        default="log_dL",
+        help="Distance/redshift coordinate used by injection sampling_pdf (default log_dL).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-frame",
+        choices=["source", "detector"],
+        default="detector",
+        help="Mass-frame used by injection sampling_pdf (default detector).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-scale",
+        choices=["linear", "log"],
+        default="log",
+        help="Mass coordinate scale used by injection sampling_pdf (default log).",
+    )
     ap.add_argument("--ifar-thresh-yr", type=float, default=1.0)
     args = ap.parse_args()
 
@@ -170,6 +194,10 @@ def main() -> int:
         pop_m_peak_sigma=5.0,
         pop_m_peak_frac=0.1,
         weight_mode="inv_sampling_pdf",
+        inj_mass_pdf_coords=str(args.inj_mass_pdf_coords),  # type: ignore[arg-type]
+        inj_sampling_pdf_dist=str(args.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_frame=str(args.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_scale=str(args.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
         include_pdet_in_event_term=False,
         selection_include_h0_volume_scaling=False,
         pe_obs_mode="noisy",
