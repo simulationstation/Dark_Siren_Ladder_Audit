@@ -14,6 +14,7 @@ from .dark_siren_h0 import (  # noqa: SLF001
     _alpha_h0_grid_from_injections,
     _build_lcdm_distance_cache,
     _injection_weights,
+    _injection_weights_full,
     compute_gr_h0_posterior_grid_hierarchical_pe,
 )
 from .dark_sirens_hierarchical_pe import GWTCPeHierarchicalSamples
@@ -61,6 +62,15 @@ class InjectionRecoveryConfig:
     mchirp_binned_nbins: int = 20
     q_binned_nbins: int = 10
     selection_ifar_thresh_yr: float = 1.0
+
+    # How to sample synthetic event truths from the injection set.
+    #
+    # - "detected": sample from the detected population ∝ w * p_det at H0_true (closed-loop detected sample).
+    # - "intrinsic": sample from the intrinsic population ∝ w (no detection conditioning).
+    #
+    # NOTE: "intrinsic" is intended as a debugging baseline for the hierarchical PE event term; it should not be
+    # combined with selection-conditioned observation draws.
+    truth_event_sampling_mode: Literal["detected", "intrinsic"] = "detected"
 
     # Population model used both for sampling events and for inference weighting.
     pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw"] = "comoving_uniform"
@@ -424,201 +434,39 @@ def generate_synthetic_detected_events_from_injections(
     This is a *closed-loop* generator: it uses the same injectables (z, masses, snr_fid) and the same
     proxy detectability mapping as alpha(model), evaluated at a chosen GR truth H0.
     """
+    truth_mode = str(cfg.truth_event_sampling_mode)
+    if truth_mode not in ("detected", "intrinsic"):
+        raise ValueError("truth_event_sampling_mode must be one of {'detected','intrinsic'}.")
+    if truth_mode == "intrinsic" and bool(cfg.pe_obs_condition_on_detection):
+        raise ValueError("truth_event_sampling_mode='intrinsic' is not compatible with pe_obs_condition_on_detection=True.")
+
     n_events = int(n_events)
     if n_events <= 0:
         raise ValueError("n_events must be positive.")
     rng = np.random.default_rng(int(seed))
 
-    # Build injection importance weights consistent with the selection proxy, then sample from the detected
+    # Build injection importance weights consistent with alpha(H0), then sample from the detected
     # population distribution w*p_det at H0_true.
-    z = np.asarray(injections.z, dtype=float)
-    dL_fid = np.asarray(injections.dL_mpc_fid, dtype=float)
-    snr_fid = np.asarray(injections.snr_net_opt, dtype=float)
-    m1 = np.asarray(injections.m1_source, dtype=float)
-    m2 = np.asarray(injections.m2_source, dtype=float)
-    found = np.asarray(injections.found_ifar, dtype=bool)
-
-    z_hi = float(min(cfg.z_max, float(np.nanmax(z))))
-    m = (
-        np.isfinite(z)
-        & (z > 0.0)
-        & (z <= z_hi)
-        & np.isfinite(dL_fid)
-        & (dL_fid > 0.0)
-        & np.isfinite(snr_fid)
-        & (snr_fid > 0.0)
-        & np.isfinite(m1)
-        & np.isfinite(m2)
-        & (m1 > 0.0)
-        & (m2 > 0.0)
-        & (m2 <= m1)
+    z, dL_fid, snr_fid, found, m1, m2, mc_det, q_ratio, w = _injection_weights_full(
+        injections,  # type: ignore[arg-type]
+        weight_mode=str(cfg.weight_mode),  # type: ignore[arg-type]
+        pop_z_mode=str(cfg.pop_z_mode),  # type: ignore[arg-type]
+        pop_z_powerlaw_k=float(cfg.pop_z_k),
+        pop_mass_mode=str(cfg.pop_mass_mode),  # type: ignore[arg-type]
+        pop_m1_alpha=float(cfg.pop_m1_alpha),
+        pop_m_min=float(cfg.pop_m_min),
+        pop_m_max=float(cfg.pop_m_max),
+        pop_q_beta=float(cfg.pop_q_beta),
+        pop_m_taper_delta=float(cfg.pop_m_taper_delta),
+        pop_m_peak=float(cfg.pop_m_peak),
+        pop_m_peak_sigma=float(cfg.pop_m_peak_sigma),
+        pop_m_peak_frac=float(cfg.pop_m_peak_frac),
+        z_max=float(cfg.z_max),
+        inj_mass_pdf_coords=str(cfg.inj_mass_pdf_coords),  # type: ignore[arg-type]
+        inj_sampling_pdf_dist=str(cfg.inj_sampling_pdf_dist),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_frame=str(cfg.inj_sampling_pdf_mass_frame),  # type: ignore[arg-type]
+        inj_sampling_pdf_mass_scale=str(cfg.inj_sampling_pdf_mass_scale),  # type: ignore[arg-type]
     )
-    z = z[m]
-    dL_fid = dL_fid[m]
-    snr_fid = snr_fid[m]
-    m1 = m1[m]
-    m2 = m2[m]
-    found = found[m]
-
-    w = np.ones_like(z, dtype=float)
-    mw = np.asarray(getattr(injections, "mixture_weight", np.ones_like(injections.z)), dtype=float)[m]
-    w = w * mw
-    if cfg.weight_mode == "inv_sampling_pdf":
-        pdf = np.asarray(injections.sampling_pdf, dtype=float)[m]
-        if not np.all(np.isfinite(pdf)) or np.any(pdf <= 0.0):
-            raise ValueError("sampling_pdf contains non-finite/non-positive values; cannot sample events.")
-        w = w / pdf
-
-        # Apply Jacobians to interpret `sampling_pdf` in the (z, m_source) measure when required.
-        if str(cfg.inj_sampling_pdf_dist) == "dL":
-            H0_ref = 67.7  # km/s/Mpc (overall scale cancels in normalized weights)
-            om0 = 0.31
-            c = 299792.458
-            z_grid = np.linspace(0.0, float(np.max(z)), 5001)
-            Ez = np.sqrt(om0 * (1.0 + z_grid) ** 3 + (1.0 - om0))
-            invEz = 1.0 / np.clip(Ez, 1e-30, np.inf)
-            dc = (c / H0_ref) * np.cumsum(np.concatenate([[0.0], 0.5 * (invEz[1:] + invEz[:-1]) * np.diff(z_grid)]))
-            Dc = np.interp(z, z_grid, dc)
-            Ez_z = np.interp(z, z_grid, Ez)
-            dDc_dz = c / (H0_ref * np.clip(Ez_z, 1e-30, np.inf))
-            ddL_dz = Dc + (1.0 + z) * dDc_dz
-            if not np.all(np.isfinite(ddL_dz)) or np.any(ddL_dz <= 0.0):
-                raise ValueError("Non-finite/non-positive dL/dz encountered while converting sampling_pdf from dL to z.")
-            w = w / ddL_dz
-        elif str(cfg.inj_sampling_pdf_dist) == "log_dL":
-            # Convert from a density in log dL to a density in z:
-            #   p(z) = p(log dL) * dlog(dL)/dz = p(log dL) * (1/dL) * (dL/dz)
-            H0_ref = 67.7  # km/s/Mpc (cancels in ratio dL/(dL/dz))
-            om0 = 0.31
-            c = 299792.458
-            z_grid = np.linspace(0.0, float(np.max(z)), 5001)
-            Ez = np.sqrt(om0 * (1.0 + z_grid) ** 3 + (1.0 - om0))
-            invEz = 1.0 / np.clip(Ez, 1e-30, np.inf)
-            dc = (c / H0_ref) * np.cumsum(np.concatenate([[0.0], 0.5 * (invEz[1:] + invEz[:-1]) * np.diff(z_grid)]))
-            Dc = np.interp(z, z_grid, dc)
-            Ez_z = np.interp(z, z_grid, Ez)
-            dDc_dz = c / (H0_ref * np.clip(Ez_z, 1e-30, np.inf))
-            ddL_dz = Dc + (1.0 + z) * dDc_dz
-            if not np.all(np.isfinite(ddL_dz)) or np.any(ddL_dz <= 0.0):
-                raise ValueError("Non-finite/non-positive dL/dz encountered while converting sampling_pdf from log_dL to z.")
-            dL = np.clip(dL_fid, 1e-12, np.inf)
-            w = w * (dL / ddL_dz)
-        elif str(cfg.inj_sampling_pdf_dist) != "z":
-            raise ValueError("Unknown inj_sampling_pdf_dist (expected 'z', 'dL', or 'log_dL').")
-
-        # Mass-frame conversion depends on whether the sampling pdf is in linear or log-mass coordinates:
-        #   - linear masses: dm_det = (1+z) dm_src => Jacobian factors in the density
-        #   - log masses: dlog m_det = dlog m_src (translation) => no Jacobian
-        if str(cfg.inj_sampling_pdf_mass_frame) == "detector":
-            if str(cfg.inj_sampling_pdf_mass_scale) == "linear":
-                if str(cfg.inj_mass_pdf_coords) == "m1m2":
-                    w = w / np.clip(1.0 + z, 1e-12, np.inf) ** 2
-                elif str(cfg.inj_mass_pdf_coords) == "m1q":
-                    w = w / np.clip(1.0 + z, 1e-12, np.inf)
-                else:
-                    raise ValueError("Unknown inj_mass_pdf_coords (expected 'm1m2' or 'm1q').")
-            elif str(cfg.inj_sampling_pdf_mass_scale) == "log":
-                pass
-            else:
-                raise ValueError("Unknown inj_sampling_pdf_mass_scale (expected 'linear' or 'log').")
-        elif str(cfg.inj_sampling_pdf_mass_frame) != "source":
-            raise ValueError("Unknown inj_sampling_pdf_mass_frame (expected 'source' or 'detector').")
-
-        # Convert from log-mass coordinate density to linear-mass density (source frame).
-        if str(cfg.inj_sampling_pdf_mass_scale) == "linear":
-            pass
-        elif str(cfg.inj_sampling_pdf_mass_scale) == "log":
-            if str(cfg.inj_mass_pdf_coords) == "m1m2":
-                w = w * np.clip(m1 * m2, 1e-300, np.inf)
-            elif str(cfg.inj_mass_pdf_coords) == "m1q":
-                w = w * np.clip(m1, 1e-300, np.inf)
-            else:
-                raise ValueError("Unknown inj_mass_pdf_coords (expected 'm1m2' or 'm1q').")
-        else:
-            raise ValueError("Unknown inj_sampling_pdf_mass_scale (expected 'linear' or 'log').")
-
-    if cfg.pop_mass_mode != "none" and cfg.weight_mode == "inv_sampling_pdf":
-        if cfg.inj_mass_pdf_coords == "m1m2":
-            w = w / np.clip(m1, 1e-300, np.inf)
-        elif cfg.inj_mass_pdf_coords == "m1q":
-            pass
-        else:
-            raise ValueError("Unknown inj_mass_pdf_coords (expected 'm1m2' or 'm1q').")
-
-    if cfg.pop_z_mode != "none":
-        # Use the same fixed-LCDM approximation as the selection proxy (relative weighting only).
-        H0_ref = 67.7
-        om0 = 0.31
-        c = 299792.458
-        z_grid = np.linspace(0.0, float(np.max(z)), 5001)
-        Ez = np.sqrt(om0 * (1.0 + z_grid) ** 3 + (1.0 - om0))
-        dc = (c / H0_ref) * np.cumsum(np.concatenate([[0.0], 0.5 * (1.0 / Ez[1:] + 1.0 / Ez[:-1]) * np.diff(z_grid)]))
-        dVdz = (c / (H0_ref * np.interp(z, z_grid, Ez))) * (np.interp(z, z_grid, dc) ** 2)
-        base = dVdz / (1.0 + z)
-        if cfg.pop_z_mode == "comoving_uniform":
-            w = w * base
-        else:
-            w = w * base * (1.0 + z) ** float(cfg.pop_z_k)
-
-    if cfg.pop_mass_mode != "none":
-        alpha = float(cfg.pop_m1_alpha)
-        mmin = float(cfg.pop_m_min)
-        mmax = float(cfg.pop_m_max)
-        beta_q = float(cfg.pop_q_beta)
-        q = np.clip(m2 / m1, 1e-6, 1.0)
-        if cfg.pop_mass_mode == "powerlaw_q":
-            good_m = (m1 >= mmin) & (m1 <= mmax) & (m2 >= mmin) & (m2 <= m1)
-            w = w * good_m.astype(float) * (m1 ** (-alpha)) * (q ** beta_q)
-        else:
-            # Smooth taper; optionally with a peak in m1.
-            delta = float(cfg.pop_m_taper_delta)
-            if not (np.isfinite(delta) and delta > 0.0):
-                raise ValueError("pop_m_taper_delta must be finite and > 0 for smooth mass modes.")
-
-            def _sig(x: np.ndarray) -> np.ndarray:
-                return 0.5 * (1.0 + np.tanh(0.5 * x))
-
-            t1 = _sig((m1 - mmin) / delta) * _sig((mmax - m1) / delta)
-            t2 = _sig((m2 - mmin) / delta) * _sig((mmax - m2) / delta)
-            taper = np.clip(t1 * t2, 1e-300, 1.0)
-            log_q = beta_q * np.log(np.clip(q, 1e-300, np.inf))
-            log_taper = np.log(taper)
-            log_pl = -alpha * np.log(np.clip(m1, 1e-300, np.inf)) + log_q + log_taper
-
-            if cfg.pop_mass_mode == "powerlaw_q_smooth":
-                log_mass = log_pl
-            elif cfg.pop_mass_mode == "powerlaw_peak_q_smooth":
-                mp = float(cfg.pop_m_peak)
-                sig = float(cfg.pop_m_peak_sigma)
-                f_peak = float(cfg.pop_m_peak_frac)
-                log_peak = -0.5 * ((m1 - mp) / sig) ** 2 - np.log(sig) + log_q + log_taper
-                if f_peak <= 0.0:
-                    log_mass = log_pl
-                elif f_peak >= 1.0:
-                    log_mass = log_peak
-                else:
-                    log_mass = np.logaddexp(np.log(1.0 - f_peak) + log_pl, np.log(f_peak) + log_peak)
-            else:
-                raise ValueError("Unknown pop_mass_mode.")
-
-            m_ok = np.isfinite(log_mass)
-            if not np.any(m_ok):
-                raise ValueError("All mass weights non-finite for injection recovery.")
-            log_mass = log_mass - float(np.nanmax(log_mass[m_ok]))
-            w = w * np.exp(log_mass)
-
-    # Drop injections with zero/invalid weights (outside population support, etc.).
-    good_w = np.isfinite(w) & (w > 0.0)
-    if not np.any(good_w):
-        raise ValueError("All injections received zero/invalid weights; check population/injection weighting configuration.")
-    if not np.all(good_w):
-        z = z[good_w]
-        dL_fid = dL_fid[good_w]
-        snr_fid = snr_fid[good_w]
-        m1 = m1[good_w]
-        m2 = m2[good_w]
-        found = found[good_w]
-        w = w[good_w]
 
     # Compute proxy detectability p_det at the truth H0, mirroring the selection-alpha construction:
     #   - calibrate the p_det curve using fiducial SNRs
@@ -628,10 +476,6 @@ def generate_synthetic_detected_events_from_injections(
     dL_true = (const.c_km_s / float(cfg.h0_true)) * dist_cache.f(z)
     dL_true = np.clip(dL_true, 1e-6, np.inf)
     snr_true = snr_fid * (dL_fid / dL_true)
-
-    mc_src = ((m1 * m2) ** (3.0 / 5.0)) / np.clip(m1 + m2, 1e-300, np.inf) ** (1.0 / 5.0)
-    mc_det = mc_src * (1.0 + z)
-    q_ratio = np.clip(m2 / m1, 1e-12, 1.0)
     det = _calibrate_detection_model_from_snr_and_found(
         snr_net_opt=snr_fid,
         found_ifar=found,
@@ -646,22 +490,27 @@ def generate_synthetic_detected_events_from_injections(
     )
     pdet = det.pdet(snr_true, mchirp_det=mc_det, q=q_ratio)
 
-    w_det = np.clip(w * np.clip(pdet, 0.0, 1.0), 0.0, np.inf)
-    good_det = np.isfinite(w_det) & (w_det > 0.0)
-    if not np.any(good_det):
-        raise ValueError("No injections have positive detected weight w*p_det.")
-    if not np.all(good_det):
-        z = z[good_det]
-        dL_fid = dL_fid[good_det]
-        snr_fid = snr_fid[good_det]
-        m1 = m1[good_det]
-        m2 = m2[good_det]
-        dL_true = dL_true[good_det]
-        snr_true = snr_true[good_det]
-        pdet = pdet[good_det]
-        w_det = w_det[good_det]
+    w_samp = np.clip(w, 0.0, np.inf)
+    if truth_mode == "detected":
+        w_samp = w_samp * np.clip(pdet, 0.0, 1.0)
 
-    prob = w_det / float(np.sum(w_det))
+    good = np.isfinite(w_samp) & (w_samp > 0.0)
+    if not np.any(good):
+        if truth_mode == "detected":
+            raise ValueError("No injections have positive detected weight w*p_det.")
+        raise ValueError("No injections have positive intrinsic weight w.")
+    if not np.all(good):
+        z = z[good]
+        dL_fid = dL_fid[good]
+        snr_fid = snr_fid[good]
+        m1 = m1[good]
+        m2 = m2[good]
+        dL_true = dL_true[good]
+        snr_true = snr_true[good]
+        pdet = pdet[good]
+        w_samp = w_samp[good]
+
+    prob = w_samp / float(np.sum(w_samp))
     n_avail = int(prob.size)
     replace = bool(n_events > n_avail)
     idx = rng.choice(n_avail, size=n_events, replace=replace, p=prob)

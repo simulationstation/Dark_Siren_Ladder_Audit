@@ -36,6 +36,12 @@ def main() -> int:
 
     ap.add_argument("--h0-true", type=float, required=True, help="Truth H0 used to generate synthetic detected events.")
     ap.add_argument("--n-events", type=int, default=20, help="Number of synthetic detected events to generate (default 20).")
+    ap.add_argument(
+        "--truth-event-sampling-mode",
+        choices=["detected", "intrinsic"],
+        default="detected",
+        help="How to sample synthetic truths from the injection set (default detected).",
+    )
     ap.add_argument("--seed", type=int, default=0, help="Seed for synthetic event selection (default 0).")
     ap.add_argument(
         "--n-proc",
@@ -248,6 +254,7 @@ def main() -> int:
         mchirp_binned_nbins=int(args.mchirp_binned_nbins),
         q_binned_nbins=int(args.q_binned_nbins),
         selection_ifar_thresh_yr=float(args.selection_ifar_thresh_yr),
+        truth_event_sampling_mode=str(args.truth_event_sampling_mode),  # type: ignore[arg-type]
         include_pdet_in_event_term=bool(args.include_pdet_in_event_term),
         pop_z_mode=str(args.pop_z_mode),  # type: ignore[arg-type]
         pop_z_k=float(args.pop_z_k),

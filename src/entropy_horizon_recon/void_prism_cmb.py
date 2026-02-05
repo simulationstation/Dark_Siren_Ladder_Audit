@@ -64,7 +64,7 @@ def bandpass_filter_map(
 
     m = np.asarray(map_in, dtype=float)
     if remove_monopole_dipole:
-        # healpy removes only monopole/dipole by default. This helps reduce large-scale leakage.
+        # healpy removes only monopole/dipole by default. This helps reduce large-scale mode mixing.
         m = hp.remove_dipole(m, fitval=False, verbose=False)
 
     alm = hp.map2alm(m, lmax=lmax_hard, iter=0, pol=False, use_weights=False)
@@ -74,4 +74,3 @@ def bandpass_filter_map(
     alm_f = hp.almxfl(alm, fl)
     out = hp.alm2map(alm_f, nside=nside, lmax=lmax_hard, pol=False, verbose=False)
     return np.asarray(out, dtype=float)
-

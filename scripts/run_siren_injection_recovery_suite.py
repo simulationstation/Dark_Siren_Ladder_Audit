@@ -254,6 +254,12 @@ def main() -> int:
     ap.add_argument("--n-events", type=int, default=50, help="Synthetic detected events per replicate (default 50).")
     ap.add_argument("--n-rep", type=int, default=32, help="Number of replicates (default 32).")
     ap.add_argument("--seed0", type=int, default=1000, help="Base seed (default 1000).")
+    ap.add_argument(
+        "--truth-event-sampling-mode",
+        choices=["detected", "intrinsic"],
+        default="detected",
+        help="How to sample synthetic truths from the injection set (default detected).",
+    )
 
     ap.add_argument("--h0-min", type=float, default=40.0, help="Min H0 in inference grid (default 40).")
     ap.add_argument("--h0-max", type=float, default=120.0, help="Max H0 in inference grid (default 120).")
@@ -474,6 +480,7 @@ def main() -> int:
         mchirp_binned_nbins=int(args.mchirp_binned_nbins),
         q_binned_nbins=int(args.q_binned_nbins),
         selection_ifar_thresh_yr=float(args.selection_ifar_thresh_yr),
+        truth_event_sampling_mode=str(args.truth_event_sampling_mode),  # type: ignore[arg-type]
         pop_z_mode=str(args.pop_z_mode),  # type: ignore[arg-type]
         pop_z_k=float(args.pop_z_k),
         pop_z_include_h0_volume_scaling=bool(args.pop_z_include_h0_volume_scaling),

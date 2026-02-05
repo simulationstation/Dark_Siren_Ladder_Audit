@@ -1100,6 +1100,60 @@ def _injection_weights(
     inj_sampling_pdf_mass_scale: Literal["linear", "log"] = "linear",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Return filtered (z, dL_fid, snr, found_ifar, chirp_mass_det, q, w) arrays for alpha(H0)."""
+    z, dL_fid, snr, found, _m1, _m2, chirp_mass_det, q_ratio, w = _injection_weights_full(
+        injections,
+        weight_mode=weight_mode,
+        pop_z_mode=pop_z_mode,
+        pop_z_powerlaw_k=pop_z_powerlaw_k,
+        pop_mass_mode=pop_mass_mode,
+        pop_m1_alpha=pop_m1_alpha,
+        pop_m_min=pop_m_min,
+        pop_m_max=pop_m_max,
+        pop_q_beta=pop_q_beta,
+        pop_m_taper_delta=pop_m_taper_delta,
+        pop_m_peak=pop_m_peak,
+        pop_m_peak_sigma=pop_m_peak_sigma,
+        pop_m_peak_frac=pop_m_peak_frac,
+        z_max=z_max,
+        galaxy_z_edges=galaxy_z_edges,
+        galaxy_z_density=galaxy_z_density,
+        inj_mass_pdf_coords=inj_mass_pdf_coords,
+        inj_sampling_pdf_dist=inj_sampling_pdf_dist,
+        inj_sampling_pdf_mass_frame=inj_sampling_pdf_mass_frame,
+        inj_sampling_pdf_mass_scale=inj_sampling_pdf_mass_scale,
+    )
+    return z, dL_fid, snr, found, chirp_mass_det, q_ratio, w
+
+
+def _injection_weights_full(
+    injections: O3aBbhInjectionSet,
+    *,
+    weight_mode: Literal["none", "inv_sampling_pdf"],
+    pop_z_mode: Literal["none", "comoving_uniform", "comoving_powerlaw", "galaxy_hist"],
+    pop_z_powerlaw_k: float,
+    pop_mass_mode: Literal["none", "powerlaw_q", "powerlaw_q_smooth", "powerlaw_peak_q_smooth"],
+    pop_m1_alpha: float,
+    pop_m_min: float,
+    pop_m_max: float,
+    pop_q_beta: float,
+    pop_m_taper_delta: float,
+    pop_m_peak: float,
+    pop_m_peak_sigma: float,
+    pop_m_peak_frac: float,
+    z_max: float,
+    galaxy_z_edges: np.ndarray | None = None,
+    galaxy_z_density: np.ndarray | None = None,
+    inj_mass_pdf_coords: Literal["m1m2", "m1q"] = "m1m2",
+    inj_sampling_pdf_dist: Literal["z", "dL", "log_dL"] = "z",
+    inj_sampling_pdf_mass_frame: Literal["source", "detector"] = "source",
+    inj_sampling_pdf_mass_scale: Literal["linear", "log"] = "linear",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return filtered arrays (including component masses) for closed-loop selection / injection recovery.
+
+    This is the shared source of truth for injection filtering + importance weights. The synthetic
+    injection-recovery generator should use the same weighting as alpha(H0) to avoid subtle SBC
+    mismatches from duplicated logic.
+    """
     z = np.asarray(injections.z, dtype=float)
     dL_fid = np.asarray(injections.dL_mpc_fid, dtype=float)
     snr = np.asarray(injections.snr_net_opt, dtype=float)
@@ -1152,7 +1206,10 @@ def _injection_weights(
     if weight_mode == "none":
         pass
     elif weight_mode == "inv_sampling_pdf":
-        pdf = np.asarray(injections.sampling_pdf, dtype=float)[m]
+        # Prefer a z×mass-only sampling pdf when available: many injection releases include spin
+        # factors inside `sampling_pdf`, which we do not model in the population proxy.
+        base_pdf = injections.sampling_pdf_z_mass if getattr(injections, "sampling_pdf_z_mass", None) is not None else injections.sampling_pdf
+        pdf = np.asarray(base_pdf, dtype=float)[m]
         if not np.all(np.isfinite(pdf)) or np.any(pdf <= 0.0):
             raise ValueError("sampling_pdf contains non-finite or non-positive values.")
         w = w / pdf
@@ -1353,11 +1410,13 @@ def _injection_weights(
         dL_fid = dL_fid[good_w]
         snr = snr[good_w]
         found = found[good_w]
+        m1 = m1[good_w]
+        m2 = m2[good_w]
         chirp_mass_det = chirp_mass_det[good_w]
         q_ratio = q_ratio[good_w]
         w = w[good_w]
 
-    return z, dL_fid, snr, found, chirp_mass_det, q_ratio, w
+    return z, dL_fid, snr, found, m1, m2, chirp_mass_det, q_ratio, w
 
 
 def _alpha_h0_grid_from_injections(

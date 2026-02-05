@@ -26,7 +26,8 @@ class O3InjectionSet:
     dL_mpc_fid: np.ndarray  # (N,) fiducial luminosity distance used for injection
     snr_net_opt: np.ndarray  # (N,) optimal network SNR (H+L)
     found_ifar: np.ndarray  # (N,) boolean
-    sampling_pdf: np.ndarray  # (N,) injection sampling pdf (not used by default)
+    sampling_pdf: np.ndarray  # (N,) injection sampling pdf from the file (may include spins/extrinsics)
+    sampling_pdf_z_mass: np.ndarray | None  # (N,) optional z×mass sampling pdf (excludes spins/extrinsics when available)
     mixture_weight: np.ndarray  # (N,) additional weight for mixture-model injection sets (defaults to 1)
     m1_source: np.ndarray  # (N,) Msun
     m2_source: np.ndarray  # (N,) Msun
@@ -67,6 +68,15 @@ def load_o3_injections(path: str | Path, *, ifar_threshold_yr: float = 1.0) -> O
             found |= vals > float(ifar_threshold_yr)
 
         sampling_pdf = np.asarray(inj["sampling_pdf"][()], dtype=float) if "sampling_pdf" in inj else np.ones_like(z, dtype=float)
+        sampling_pdf_z_mass = None
+        # Prefer explicit component PDFs when available: these exclude spin/extrinsic factors and make
+        # z+mass reweighting dramatically better conditioned.
+        if "redshift_sampling_pdf" in inj and "mass1_source_mass2_source_sampling_pdf" in inj:
+            z_pdf = np.asarray(inj["redshift_sampling_pdf"][()], dtype=float)
+            m_pdf = np.asarray(inj["mass1_source_mass2_source_sampling_pdf"][()], dtype=float)
+            if z_pdf.shape != z.shape or m_pdf.shape != z.shape:
+                raise ValueError(f"{path}: redshift/mass sampling pdf datasets have unexpected shapes.")
+            sampling_pdf_z_mass = np.asarray(z_pdf * m_pdf, dtype=float)
         mixture_weight = np.asarray(inj["mixture_weight"][()], dtype=float) if "mixture_weight" in inj else np.ones_like(z, dtype=float)
 
         m1 = np.asarray(inj["mass1_source"][()], dtype=float)
@@ -93,6 +103,7 @@ def load_o3_injections(path: str | Path, *, ifar_threshold_yr: float = 1.0) -> O
         snr_net_opt=snr_net,
         found_ifar=np.asarray(found, dtype=bool),
         sampling_pdf=sampling_pdf,
+        sampling_pdf_z_mass=sampling_pdf_z_mass,
         mixture_weight=mixture_weight,
         m1_source=m1,
         m2_source=m2,
@@ -403,7 +414,11 @@ def compute_selection_alpha_from_injections(
     if weight_mode == "none":
         pass
     elif weight_mode == "inv_sampling_pdf":
-        pdf = np.asarray(injections.sampling_pdf, dtype=float)[m]
+        # Prefer a z×mass-only sampling pdf when available: many modern injection releases bundle
+        # spin (and sometimes extrinsic) factors into `sampling_pdf`, which we do not model in the
+        # population proxy. Using the reduced pdf keeps importance weights well-conditioned.
+        base_pdf = injections.sampling_pdf_z_mass if injections.sampling_pdf_z_mass is not None else injections.sampling_pdf
+        pdf = np.asarray(base_pdf, dtype=float)[m]
         if not np.all(np.isfinite(pdf)) or np.any(pdf <= 0.0):
             raise ValueError("sampling_pdf contains non-finite or non-positive values; cannot use inv_sampling_pdf weighting.")
         w = w / pdf
