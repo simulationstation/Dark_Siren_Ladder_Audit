@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
+from scipy.special import ndtri
 
 from .constants import PhysicalConstants
 from .dark_siren_h0 import (  # noqa: SLF001
@@ -122,6 +123,11 @@ class InjectionRecoveryConfig:
 
     # Synthetic PE posterior sampling.
     pe_obs_mode: Literal["truth", "noisy"] = "noisy"
+    # If True, condition the noisy distance observation on detection (Malmquist-like truncation).
+    #
+    # This makes the synthetic generator consistent with the *standard* detected-event likelihood
+    # convention used in Gate‑2: p_det only enters through alpha(Λ), not the per-event numerator.
+    pe_obs_condition_on_detection: bool = True
     pe_n_samples: int = 10_000
     pe_synth_mode: Literal["naive_gaussian", "prior_resample", "likelihood_resample"] = "likelihood_resample"
     pe_prior_resample_n_candidates: int = 200_000
@@ -306,6 +312,33 @@ def _pe_sigmas_from_cfg_and_snr(*, cfg: InjectionRecoveryConfig, snr_net_opt_tru
     mc_log_sigma = float(np.clip(float(cfg.mc_frac_sigma0) / snr, 1e-4, 0.5))
     q_sigma = float(np.clip(float(cfg.q_sigma0), 1e-4, 1.0))
     return dl_log_sigma, mc_log_sigma, q_sigma
+
+
+def _sample_log_dL_obs_conditional_on_detection(
+    rng: np.random.Generator,
+    *,
+    log_dL_true: float,
+    sigma_log_dL: float,
+    p_det_true: float,
+    u_floor: float = 1e-15,
+) -> float:
+    """Sample log dL from N(log_dL_true, sigma^2) conditioned on "detected".
+
+    We model detection as a monotone cut on the Normal CDF of the distance noise:
+
+      u = Φ((log dL_obs - log dL_true) / σ)  ~ Uniform(0,1)
+      det = 1{u < p_det_true}
+
+    Therefore, conditional on det=1, we can draw u ~ Uniform(0, p_det_true) and set:
+      log dL_obs = log dL_true + σ Φ^{-1}(u).
+    """
+    sigma_log_dL = float(sigma_log_dL)
+    if not (np.isfinite(sigma_log_dL) and sigma_log_dL > 0.0):
+        raise ValueError("sigma_log_dL must be finite and positive.")
+    p = float(np.clip(float(p_det_true), float(u_floor), 1.0))
+    u = float(rng.uniform(low=0.0, high=p))
+    u = float(max(u, float(u_floor)))
+    return float(log_dL_true + sigma_log_dL * float(ndtri(u)))
 
 
 def _sample_truncated_normal(
@@ -650,7 +683,16 @@ def generate_synthetic_detected_events_from_injections(
             q_obs = q
         elif cfg.pe_obs_mode == "noisy":
             dl_log_sigma, mc_log_sigma, q_sigma = _pe_sigmas_from_cfg_and_snr(cfg=cfg, snr_net_opt_true=snr_true_j)
-            dL_obs = float(np.exp(rng.normal(loc=np.log(dL_true_j), scale=dl_log_sigma)))
+            if bool(cfg.pe_obs_condition_on_detection):
+                log_dL_obs = _sample_log_dL_obs_conditional_on_detection(
+                    rng,
+                    log_dL_true=float(np.log(float(dL_true_j))),
+                    sigma_log_dL=float(dl_log_sigma),
+                    p_det_true=float(pdet[j]),
+                )
+                dL_obs = float(np.exp(log_dL_obs))
+            else:
+                dL_obs = float(np.exp(rng.normal(loc=np.log(dL_true_j), scale=dl_log_sigma)))
             mc_det_obs = float(np.exp(rng.normal(loc=np.log(mc_det), scale=mc_log_sigma)))
             q_obs = float(_sample_truncated_normal(rng, mu=q, sigma=q_sigma, lo=0.05, hi=1.0, size=1)[0])
         else:

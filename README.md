@@ -48,6 +48,12 @@ For the O3b mixture injection file above (`endo3_mixture-LIGO-T2100113-v12-12566
 --inj-sampling-pdf-dist log_dL --inj-sampling-pdf-mass-frame detector --inj-sampling-pdf-mass-scale linear
 ```
 
+For the GWTC‑3 population injection file (`data/cache/gw/zenodo/11254021/.../injections/o3a_bbhpop_inj_info.hdf`), closed-loop SBC indicates the `sampling_pdf` mass measure behaves like **log-mass coordinates**, i.e. improved calibration using:
+
+```bash
+--inj-sampling-pdf-dist log_dL --inj-sampling-pdf-mass-scale log
+```
+
 ## Gate‑2 population anchoring (recommended)
 
 The GR \(H_0\) selection-on control is sensitive to population assumptions. For a “best available” baseline, you can marginalize over **LVK GWTC‑3 population hyperposterior draws** (PowerLaw+Peak + powerlaw redshift), using the O3a population data release bilby-result JSON:
@@ -131,6 +137,8 @@ To run a larger *resumable* injection-recovery suite and add an SBC-style check 
 ```
 
 This writes `tables/suite_aggregate.json` with `u_h0_on_*` and produces `figures/sbc_u_h0_on_{cdf,hist}.png`.
+
+Note: the synthetic detected-event generator conditions the noisy distance observation on detection (`pe_obs_condition_on_detection=True`) to avoid a selection-on-θ mismatch; see `2-3-G/gate2_sbc_report.md`.
 
 ## Third-party software
 

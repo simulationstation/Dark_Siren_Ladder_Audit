@@ -29,6 +29,7 @@ This is the **“ghost”** behavior the project is designed to isolate: *model 
 
 **2026-02-04 update (Gate‑2 calibration):** a focused SBC-style Gate‑2 GR \(H_0\) calibration note (and figures) is in:
 - `2-3-G/gate2_sbc_report.md`
+  - Late update: fixed a structural selection-on-data vs selection-on-θ mismatch in the synthetic generator by conditioning the noisy distance observation on detection; toy closed-loop SBC is now near-uniform. For the GWTC‑3 BBH-pop injection file, SBC improves when interpreting `sampling_pdf` mass measure as log-mass (`--inj-sampling-pdf-mass-scale log`).
 
 ## Artifacts (where to look)
 

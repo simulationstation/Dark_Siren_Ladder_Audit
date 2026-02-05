@@ -2,6 +2,34 @@
 
 This short note documents a **simulation-based calibration (SBC)** style diagnostic for the **Gate‑2 GR \(H_0\)** control, and what it implies about where the current “Gate‑2 feels broken” behavior actually comes from.
 
+## 2026‑02‑04 late update — the structural bug (selection-on-data vs selection-on-θ)
+
+We found (and fixed) a *structural* mismatch between the **synthetic detected-event generator** used in Gate‑2 calibration suites and the **likelihood convention** used by the Gate‑2 GR \(H_0\) control:
+
+- Gate‑2’s standard detected-event bookkeeping assumes **selection-on-data**: \(p_\mathrm{det}\) enters only through the selection factor \(\alpha(H_0)\) (the \(-N\log\alpha\) term), not inside the per-event numerator.
+- Our synthetic generator was effectively **selection-on-θ**: it sampled events from the detected \(\theta\) distribution (weights \(\propto p_\mathrm{det}(\theta)\)) but then generated PE “observations” with **unconditioned** noise. That breaks the implied \(p(d\mid \theta, \mathrm{det})\) and produces SBC failures that worsen with stacking.
+
+**Fix:** when `pe_obs_mode=noisy`, we now condition the synthetic distance observation on detection (“Malmquist-like truncation”):
+
+- draw \(u\sim\mathrm{Uniform}(0, p_\mathrm{det}^\mathrm{true})\),
+- set \(\epsilon = \sigma\,\Phi^{-1}(u)\),
+- set \(\log d_L^\mathrm{obs} = \log d_L^\mathrm{true} + \epsilon\).
+
+This makes the closed-loop generator consistent with the Gate‑2 likelihood convention (selection correction through \(\alpha\) only).
+
+**Evidence (toy closed-loop, no injection file):**
+- Old (unconditioned obs; miscalibrated): `outputs/gate2_toy_sbc_suite_uniform_fixedz062_popZmass_detlogistic_n50_n128_20260204_230820UTC/` had `u_h0_on_mean≈0.5836`, `u_h0_on_ks≈0.1668`.
+- New (conditioned obs; calibrated): `outputs/gate2_toy_sbc_suite_uniform_fixedz062_popZmass_detlogistic_n50_n256_condDetObs_20260204_232848UTC/` has `u_h0_on_mean≈0.4569`, `u_h0_on_ks≈0.0860`, and near-nominal interval coverage.
+
+**GWTC‑3 O3a BBH-pop injection file note:** when using `data/cache/gw/zenodo/11254021/.../o3a_bbhpop_inj_info.hdf`, Gate‑2 SBC improves substantially **only** if we also interpret the injection `sampling_pdf` mass measure as **log-mass**:
+
+- Recommended for this file: `--inj-sampling-pdf-dist log_dL --inj-sampling-pdf-mass-scale log` (mass frame becomes irrelevant under log-mass).
+- Example run (conditioned obs + mass-scale log): `outputs/gate2_suite_sbc_uniform_fixedz062_popZmass_det3D_n50_condDetObs_massScaleLog_20260204_235310UTC/` with `coverage_68_on≈0.574`, `coverage_95_on≈0.883`, `u_h0_on_ks≈0.102`.
+
+Figures copied into git from that run:
+- `2-3-G/figures/gate2_sbc_u_h0_on_cdf_gwtc3pop_massScaleLog.png`
+- `2-3-G/figures/gate2_sbc_u_h0_on_hist_gwtc3pop_massScaleLog.png`
+
 ## What was tested
 
 We ran the injection-recovery suite while sampling the truth \(H_0^\star\) from the same implicit prior used by the grid posterior (uniform on the grid):

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
-from scipy.special import logsumexp
+from scipy.special import log_ndtr, logsumexp
 
 from ligo.skymap import distance as ligo_distance
 
@@ -21,6 +21,7 @@ from .dark_sirens_selection import (
     calibrate_snr_threshold_match_found_fraction,
 )
 from .dark_sirens_hierarchical_pe import GWTCPeHierarchicalSamples
+from .gwtc_pe_priors import parse_gwtc_analytic_prior
 from .gw_distance_priors import GWDistancePrior
 from .importance_sampling import smooth_logweights
 
@@ -2244,6 +2245,78 @@ def _event_logL_h0_grid_from_hierarchical_pe_samples(
         pdet = det_model.pdet(snr_samp, mchirp_det=mc_det, q=q)
         log_pdet_samp = np.log(np.clip(pdet, 1e-300, 1.0))
 
+    # Tail-completion helpers: when mapping PE dL samples to z at high H0, the hard z<=z_max cut can
+    # yield zero "good" samples even when the underlying posterior has non-zero (but tiny) mass there.
+    # Treating that as exactly zero makes per-event logL(H0) collapse to -inf at some grid points,
+    # which accumulates into severe overconfidence when stacking many events. We patch this structurally
+    # by estimating the *rare-event* probability P(dL <= dL(z_max; H0)) using a smoothed (KDE-like)
+    # CDF in log dL, and combining it with a boundary-weight estimate at z=z_max.
+    log_dL_s = np.log(np.clip(dL_s, 1e-300, np.inf))
+    # Robust-ish Normal fit in log dL using quantiles (more stable than mean/std under skew).
+    q16, q50, q84 = np.quantile(log_dL_s, [0.16, 0.50, 0.84])
+    mu_logdL = float(q50)
+    sig_logdL = float(0.5 * (q84 - q16))
+    if not (np.isfinite(mu_logdL) and np.isfinite(sig_logdL) and sig_logdL > 0.0):
+        mu_logdL = float(np.mean(log_dL_s))
+        sig_logdL = float(np.std(log_dL_s, ddof=0))
+    if not (np.isfinite(mu_logdL) and np.isfinite(sig_logdL) and sig_logdL > 0.0):
+        # Degenerate distance posterior; fall back to an arbitrarily small sigma to avoid NaNs.
+        mu_logdL = float(np.median(log_dL_s))
+        sig_logdL = 1e-6
+
+    # Bandwidth for a cheap smoothed-CDF estimate in log dL (Silverman/Scott style).
+    # This is only used when the hard z<=z_max cut yields zero mapped samples (rare-event regime).
+    h_logdL = 1.06 * float(sig_logdL) * float(n_samp) ** (-1.0 / 5.0)
+    if not (np.isfinite(h_logdL) and h_logdL > 0.0):
+        h_logdL = 1e-3
+    h_logdL = float(max(h_logdL, 1e-6))
+
+    # Try to reconstruct the analytic PE distance prior to evaluate log π_PE(dL) at off-sample dL.
+    # If that fails, fall back to a log-log linear fit to the provided sample-wise log π values.
+    dL_prior = None
+    prior_spec = pe.prior_spec if isinstance(pe.prior_spec, dict) else {}
+    if isinstance(prior_spec, dict):
+        sp = prior_spec.get("luminosity_distance")
+        if isinstance(sp, dict):
+            expr = sp.get("expr")
+            if isinstance(expr, str) and expr.strip():
+                try:
+                    _, dL_prior = parse_gwtc_analytic_prior(expr)
+                except Exception:
+                    dL_prior = None
+            if dL_prior is None and isinstance(sp.get("class_name"), str) and isinstance(sp.get("kwargs"), dict):
+                cls = str(sp["class_name"])
+                kw = dict(sp["kwargs"])
+                try:
+                    expr2 = cls + "(" + ", ".join(f"{k}={kw[k]!r}" for k in sorted(kw)) + ")"
+                    _, dL_prior = parse_gwtc_analytic_prior(expr2)
+                except Exception:
+                    dL_prior = None
+
+    # Fit log π_PE(dL) ≈ a + b log(dL) as a cheap extrapolation fallback.
+    a_logpi = 0.0
+    b_logpi = 0.0
+    m_fit = np.isfinite(log_pi_dL) & np.isfinite(log_dL_s)
+    if np.count_nonzero(m_fit) >= 2:
+        A = np.stack([np.ones_like(log_dL_s[m_fit]), log_dL_s[m_fit]], axis=1)
+        y = np.asarray(log_pi_dL[m_fit], dtype=float)
+        try:
+            coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+            a_logpi = float(coef[0])
+            b_logpi = float(coef[1])
+        except Exception:
+            a_logpi = 0.0
+            b_logpi = 0.0
+
+    def _log_pi_dL_eval(dL: np.ndarray) -> np.ndarray:
+        dL = np.asarray(dL, dtype=float)
+        if dL_prior is not None:
+            try:
+                return np.asarray(dL_prior.logpdf(dL), dtype=float)
+            except Exception:
+                pass
+        return a_logpi + b_logpi * np.log(np.clip(dL, 1e-300, np.inf))
+
     z_grid = np.asarray(dist_cache.z_grid, dtype=float)
     f_grid = np.asarray(dist_cache.f_grid, dtype=float)
     if z_grid.ndim != 1 or f_grid.ndim != 1 or z_grid.shape != f_grid.shape:
@@ -2257,6 +2330,62 @@ def _event_logL_h0_grid_from_hierarchical_pe_samples(
     df_dz_grid = np.gradient(f_grid, z_grid)
     if np.any(~np.isfinite(df_dz_grid)) or np.any(df_dz_grid <= 0.0):
         raise ValueError("Non-positive df/dz encountered in distance cache; cannot invert.")
+
+    # Boundary values at z=z_max (end of cache).
+    z_b = float(z_grid[-1])
+    f_b = float(f_grid[-1])
+    df_dz_b = float(df_dz_grid[-1])
+    if not (np.isfinite(z_b) and np.isfinite(f_b) and f_b > 0.0 and np.isfinite(df_dz_b) and df_dz_b > 0.0):
+        raise ValueError("Invalid boundary values in dist_cache.")
+    if abs(z_b - float(z_max)) > 1e-9:
+        # dist_cache is constructed with z_max as its endpoint; this is a hard invariant.
+        raise ValueError("dist_cache endpoint z does not match z_max; rebuild the cache with the provided z_max.")
+
+    # Precompute sample-wise mass terms at z=z_max for the tail-completion fallback.
+    log_mass_term = np.zeros((n_samp,), dtype=float)
+    log_pi_mass = np.zeros((n_samp,), dtype=float)
+    if pop_mass_mode != "none":
+        log_pi_mass = log_pi_mc + log_pi_q
+        z_b_arr = float(z_b)
+        q_g = np.asarray(q, dtype=float)
+        Mc_src_b = mc_det / (1.0 + z_b_arr)
+        m1_src_b = _m1_source_from_chirp_mass_and_q(Mc_source=Mc_src_b, q=q_g)
+        if pop_mass_mode == "powerlaw_q":
+            log_m_b = _log_pop_weight_mass_source_powerlaw_q(
+                m1_src_b,
+                q_g,
+                alpha=float(pop_m1_alpha),
+                m_min=float(pop_m_min),
+                m_max=float(pop_m_max),
+                q_beta=float(pop_q_beta),
+            )
+        elif pop_mass_mode == "powerlaw_q_smooth":
+            log_m_b = _log_pop_weight_mass_source_powerlaw_q_smooth(
+                m1_src_b,
+                q_g,
+                alpha=float(pop_m1_alpha),
+                m_min=float(pop_m_min),
+                m_max=float(pop_m_max),
+                q_beta=float(pop_q_beta),
+                m_taper_delta=float(pop_m_taper_delta),
+            )
+        elif pop_mass_mode == "powerlaw_peak_q_smooth":
+            log_m_b = _log_pop_weight_mass_source_powerlaw_peak_q_smooth(
+                m1_src_b,
+                q_g,
+                alpha=float(pop_m1_alpha),
+                m_min=float(pop_m_min),
+                m_max=float(pop_m_max),
+                q_beta=float(pop_q_beta),
+                m_taper_delta=float(pop_m_taper_delta),
+                m_peak=float(pop_m_peak),
+                m_peak_sigma=float(pop_m_peak_sigma),
+                m_peak_frac=float(pop_m_peak_frac),
+            )
+        else:  # pragma: no cover
+            raise ValueError("Unknown pop_mass_mode.")
+        log_mass_coord_jac_b = (1.0 / 5.0) * np.log1p(q_g) - (3.0 / 5.0) * np.log(np.clip(q_g, 1e-300, np.inf)) - np.log1p(z_b_arr)
+        log_mass_term = np.asarray(log_m_b + log_mass_coord_jac_b - log_pi_mass, dtype=float)
 
     logL = np.full((H0_grid.size,), -np.inf, dtype=float)
     ess = np.zeros((H0_grid.size,), dtype=float)
@@ -2273,8 +2402,74 @@ def _event_logL_h0_grid_from_hierarchical_pe_samples(
         good = np.isfinite(z_samp) & (z_samp > 0.0) & (z_samp <= z_max) & np.isfinite(ddLdz_s) & (ddLdz_s > 0.0)
         n_good[j] = float(np.count_nonzero(good))
         if not np.any(good):
-            logL[j] = -np.inf
-            ess[j] = 0.0
+            # Tail completion: estimate log E[w * 1{z<=z_max}] from a rare-event probability in log dL,
+            # times a boundary weight estimate at z=z_max.
+            dL_cut = (float(constants.c_km_s) / float(H0)) * float(f_b)
+            if not (np.isfinite(dL_cut) and dL_cut > 0.0):
+                logL[j] = -np.inf
+                ess[j] = 0.0
+                continue
+
+            log_dL_cut = float(np.log(dL_cut))
+            # Smoothed CDF in log dL: p ≈ mean_i Φ((log_dL_cut - log_dL_i)/h).
+            # Use log-domain aggregation for stability in extreme tails.
+            zc = (log_dL_cut - log_dL_s) / float(h_logdL)
+            log_p_tail = float(logsumexp(log_ndtr(zc)) - np.log(float(n_samp)))
+
+            log_pi_dL_cut = float(_log_pi_dL_eval(np.asarray([dL_cut], dtype=float))[0])
+            if not np.isfinite(log_pi_dL_cut):
+                logL[j] = -np.inf
+                ess[j] = 0.0
+                continue
+
+            # Boundary Jacobian and pop_z weight at z=z_max.
+            ddLdz_b = (float(constants.c_km_s) / float(H0)) * float(df_dz_b)
+            if not (np.isfinite(ddLdz_b) and ddLdz_b > 0.0):
+                logL[j] = -np.inf
+                ess[j] = 0.0
+                continue
+            log_jac_b = -float(np.log(ddLdz_b))
+
+            if pop_z_mode == "none":
+                log_z_b = 0.0
+            else:
+                om = float(dist_cache.omega_m0)
+                ok = float(dist_cache.omega_k0)
+                ol = 1.0 - om - ok
+                Ez2_b = om * (1.0 + z_b) ** 3 + ok * (1.0 + z_b) ** 2 + ol
+                Ez_b = float(np.sqrt(max(Ez2_b, 1e-30)))
+                log_base_b = 2.0 * float(np.log(f_b)) - 3.0 * float(np.log1p(z_b)) - float(np.log(Ez_b))
+                if bool(pop_z_include_h0_volume_scaling):
+                    log_base_b = log_base_b + 3.0 * float(np.log(float(constants.c_km_s))) - 3.0 * float(np.log(float(H0)))
+                if pop_z_mode == "comoving_uniform":
+                    log_z_b = log_base_b
+                elif pop_z_mode == "comoving_powerlaw":
+                    log_z_b = log_base_b + float(pop_z_k) * float(np.log1p(z_b))
+                else:  # pragma: no cover
+                    raise ValueError("Unknown pop_z_mode.")
+
+            if log_pdet_samp is None:
+                log_pdet_b = 0.0
+            else:
+                # Evaluate p_det at the boundary distance dL_cut.
+                snr_ref = pe.snr_net_opt_ref
+                dL_ref = pe.dL_mpc_ref
+                if snr_ref is None or dL_ref is None:
+                    raise ValueError("Tail completion requires (snr_net_opt_ref, dL_mpc_ref) when include_pdet_in_event_term=True.")
+                snr_norm = float(snr_ref) * float(dL_ref)
+                snr_cut = snr_norm / float(np.clip(dL_cut, 1e-12, np.inf))
+                pdet_b = det_model.pdet(np.full((n_samp,), float(snr_cut), dtype=float), mchirp_det=mc_det, q=q)  # type: ignore[union-attr]
+                log_pdet_b = np.log(np.clip(pdet_b, 1e-300, 1.0))
+
+            # Combine: log E[w I] ≈ log P_tail + log E[w | z≈z_max] using boundary weights.
+            logw_b = float(log_z_b) + float(log_jac_b) + log_pdet_b + log_mass_term - float(log_pi_dL_cut)
+            sm_b = smooth_logweights(logw_b, method=importance_smoothing, truncate_tau=importance_truncate_tau)
+            log_mean_w_b = float(logsumexp(sm_b.logw) - np.log(float(n_samp)))
+
+            logL[j] = float(log_p_tail + log_mean_w_b)
+            p_tail = float(np.exp(np.clip(log_p_tail, -745.0, 0.0))) if np.isfinite(log_p_tail) else 0.0
+            n_good[j] = float(p_tail * float(n_samp))
+            ess[j] = float(p_tail * float(sm_b.ess_smooth))
             continue
 
         log_jac = -np.log(ddLdz_s[good])

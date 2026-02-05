@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
+from scipy.special import ndtri
 
 from entropy_horizon_recon.constants import PhysicalConstants
 from entropy_horizon_recon.dark_siren_h0 import _build_lcdm_distance_cache, compute_gr_h0_posterior_grid_hierarchical_pe  # noqa: SLF001
@@ -519,7 +520,13 @@ def _run_rep(rep: int, seed: int) -> dict[str, Any]:
             mc_log_sigma = float(np.clip(float(cfg_rep.mc_frac_sigma0) / snr, 1e-4, 0.5))
             q_sigma = float(np.clip(float(cfg_rep.q_sigma0), 1e-4, 1.0))
 
-            dL_obs = float(np.exp(rng.normal(loc=np.log(float(dL_true)), scale=dl_log_sigma)))
+            if bool(cfg_rep.pe_obs_condition_on_detection):
+                p = float(np.clip(float(pdet_true), 1e-15, 1.0))
+                u = float(rng.uniform(low=0.0, high=p))
+                u = float(max(u, 1e-15))
+                dL_obs = float(np.exp(np.log(float(dL_true)) + dl_log_sigma * float(ndtri(u))))
+            else:
+                dL_obs = float(np.exp(rng.normal(loc=np.log(float(dL_true)), scale=dl_log_sigma)))
             mc_det_obs = float(np.exp(rng.normal(loc=np.log(float(mc_det_true)), scale=mc_log_sigma)))
             # cheap truncated normal for q
             q_obs = float(np.clip(rng.normal(loc=float(q_true), scale=q_sigma), 0.05, 1.0))
