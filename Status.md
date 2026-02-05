@@ -71,6 +71,13 @@ A *known failure mode* existed for wide \(H_0\) grids when \(z_{\max}\) was too 
 
 **2026‑02‑04 update (important):** auto-expanding \(z_{\max}\) is now treated as a **debug-only** knob. In closed-loop tests it can silently change the inference regime (e.g. expand \(z_{\max}\) far beyond the intended galaxy/selection window) and produce catastrophic injection-recovery bias on wide \(H_0\) grids. The default policy in the Gate‑2 and injection-recovery runners is now **`z_max_mode=fixed`**.
 
+**2026‑02‑05 update (important):** reproducing the **real-data Gate‑2 configuration** in closed-loop SBC showed a **major sensitivity to the injection `sampling_pdf` mass-frame convention** for the O3 sensitivity injection file:
+
+- using `inj_sampling_pdf_mass_frame=detector` produced a large SBC failure (e.g. `u_h0_on_mean≈0.25` for \(H_0\in[40,200]\), 25 events/rep),
+- switching to `inj_sampling_pdf_mass_frame=source` materially improved calibration (e.g. `u_h0_on_mean≈0.42`, `bias_p50_on_mean≈+1.6 km/s/Mpc` over 128 reps), though the wide-grid SBC is **still not nominal**.
+
+This strongly suggests that **misinterpreting the injection mass measure can masquerade as “Gate‑2 is broken.”** See `FINDINGS/gate2_sbc_injpdf_massframe_ab_20260205.md` for the A/B sweep and output paths.
+
 ## 3) What’s in this repo (layout)
 
 Tracked (code/docs):

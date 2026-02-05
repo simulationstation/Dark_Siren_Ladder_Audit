@@ -42,11 +42,13 @@ Some injection releases define `sampling_pdf` in coordinates other than `(z, m_s
 - `--inj-sampling-pdf-mass-frame {source,detector}`
 - `--inj-sampling-pdf-mass-scale {linear,log}`
 
-For the O3b mixture injection file above (`endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5`), our SBC-style injection-recovery sweeps indicate improved calibration using:
+For the O3 sensitivity mixture injection file above (`endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5`), A/B SBC sweeps show **strong sensitivity** to the injection `sampling_pdf` mass-measure convention. The current best-performing convention in closed loop is:
 
 ```bash
---inj-sampling-pdf-dist log_dL --inj-sampling-pdf-mass-frame detector --inj-sampling-pdf-mass-scale linear
+--inj-sampling-pdf-dist log_dL --inj-sampling-pdf-mass-frame source --inj-sampling-pdf-mass-scale linear
 ```
+
+Using `--inj-sampling-pdf-mass-frame detector` for this file can produce large, repeatable Gate‑2 SBC failures on wide \(H_0\) grids; see `FINDINGS/gate2_sbc_injpdf_massframe_ab_20260205.md`.
 
 For the GWTC‑3 population injection file (`data/cache/gw/zenodo/11254021/.../injections/o3a_bbhpop_inj_info.hdf`), closed-loop SBC indicates the `sampling_pdf` mass measure behaves like **log-mass coordinates**, i.e. improved calibration using:
 

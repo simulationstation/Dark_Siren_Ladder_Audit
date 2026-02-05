@@ -57,6 +57,31 @@ def main() -> int:
     )
     ap.add_argument("--selection-ifar-thresh-yr", type=float, default=None, help="Override IFAR threshold (years).")
 
+    ap.add_argument(
+        "--inj-mass-pdf-coords",
+        choices=["m1m2", "m1q"],
+        default=None,
+        help="Override injection mass-coordinate convention for sampling_pdf (default: use Gate-2 JSON).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-dist",
+        choices=["z", "dL", "log_dL"],
+        default=None,
+        help="Override injection distance/redshift convention for sampling_pdf (default: use Gate-2 JSON).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-frame",
+        choices=["source", "detector"],
+        default=None,
+        help="Override injection mass-frame convention for sampling_pdf (default: use Gate-2 JSON).",
+    )
+    ap.add_argument(
+        "--inj-sampling-pdf-mass-scale",
+        choices=["linear", "log"],
+        default=None,
+        help="Override injection mass-scale convention for sampling_pdf (default: use Gate-2 JSON).",
+    )
+
     ap.add_argument("--n-pdet-draws", type=int, default=200, help="Number of p_det draws for marginalization (default 200).")
     ap.add_argument("--pdet-pseudocount", type=float, default=1.0, help="Beta prior pseudocount per cell/bin (default 1.0).")
     ap.add_argument("--pdet-draw-seed", type=int, default=0, help="RNG seed for p_det draws (default 0).")
@@ -118,10 +143,22 @@ def main() -> int:
     pop_z_mode = str(pop.get("pop_z_mode", sel_meta.get("pop_z_mode", "none")))
     pop_z_k = float(pop.get("pop_z_k", sel_meta.get("pop_z_k", 0.0)))
     pop_mass_mode = str(pop.get("pop_mass_mode", sel_meta.get("pop_mass_mode", "none")))
-    inj_mass_pdf_coords = str(gate2.get("inj_mass_pdf_coords", sel_meta.get("inj_mass_pdf_coords", "m1m2")))
-    inj_sampling_pdf_dist = str(gate2.get("inj_sampling_pdf_dist", sel_meta.get("inj_sampling_pdf_dist", "z")))
-    inj_sampling_pdf_mass_frame = str(gate2.get("inj_sampling_pdf_mass_frame", sel_meta.get("inj_sampling_pdf_mass_frame", "source")))
-    inj_sampling_pdf_mass_scale = str(gate2.get("inj_sampling_pdf_mass_scale", sel_meta.get("inj_sampling_pdf_mass_scale", "linear")))
+    inj_mass_pdf_coords = (
+        str(args.inj_mass_pdf_coords) if args.inj_mass_pdf_coords is not None else str(gate2.get("inj_mass_pdf_coords", sel_meta.get("inj_mass_pdf_coords", "m1m2")))
+    )
+    inj_sampling_pdf_dist = (
+        str(args.inj_sampling_pdf_dist) if args.inj_sampling_pdf_dist is not None else str(gate2.get("inj_sampling_pdf_dist", sel_meta.get("inj_sampling_pdf_dist", "z")))
+    )
+    inj_sampling_pdf_mass_frame = (
+        str(args.inj_sampling_pdf_mass_frame)
+        if args.inj_sampling_pdf_mass_frame is not None
+        else str(gate2.get("inj_sampling_pdf_mass_frame", sel_meta.get("inj_sampling_pdf_mass_frame", "source")))
+    )
+    inj_sampling_pdf_mass_scale = (
+        str(args.inj_sampling_pdf_mass_scale)
+        if args.inj_sampling_pdf_mass_scale is not None
+        else str(gate2.get("inj_sampling_pdf_mass_scale", sel_meta.get("inj_sampling_pdf_mass_scale", "linear")))
+    )
 
     pop_m1_alpha = float(pop.get("pop_m1_alpha", sel_meta.get("pop_m1_alpha", 2.3)))
     pop_m_min = float(pop.get("pop_m_min", sel_meta.get("pop_m_min", 5.0)))

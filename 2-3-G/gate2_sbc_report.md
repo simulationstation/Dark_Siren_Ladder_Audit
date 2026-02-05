@@ -2,6 +2,23 @@
 
 This short note documents a **simulation-based calibration (SBC)** style diagnostic for the **Gate‑2 GR \(H_0\)** control, and what it implies about where the current “Gate‑2 feels broken” behavior actually comes from.
 
+## 2026‑02‑05 update — injection `sampling_pdf` mass-frame convention matters (big)
+
+While reproducing the **real-data Gate‑2 configuration** in closed loop (same injection file + selection proxy, same LVK population draw used by `lvk_0000`), we found a **first-order** source of SBC failure:
+
+- interpreting `injections/sampling_pdf` as a density in **detector-frame** component masses (and therefore applying \((1+z)\) Jacobians under `weight_mode=inv_sampling_pdf`) produces a large, repeatable SBC failure on a wide \(H_0\) grid.
+- switching to **source-frame** interpretation materially improves calibration.
+
+Concrete A/B (16 reps, \(H_0 \in [40,200]\), `z_max=0.62`, 25 events/rep, `pe_n_samples=5000`, `det_model=snr_mchirp_q_binned`, LVK draw `lvk_0000` population params):
+
+- baseline (`inj_sampling_pdf_mass_frame=detector`): `u_h0_on_mean≈0.251`, `bias_p50_on_mean≈+8.28`
+- A/B flip (`inj_sampling_pdf_mass_frame=source`): `u_h0_on_mean≈0.448`, `bias_p50_on_mean≈+1.55`
+
+Higher-stat follow-up (128 reps) with `inj_sampling_pdf_mass_frame=source` still shows non-uniform SBC over the full \([40,200]\) range, but the **catastrophic** bias from the detector-frame convention is removed.
+
+Details + paths are recorded in:
+- `FINDINGS/gate2_sbc_injpdf_massframe_ab_20260205.md`
+
 ## 2026‑02‑04 late update — the structural bug (selection-on-data vs selection-on-θ)
 
 We found (and fixed) a *structural* mismatch between the **synthetic detected-event generator** used in Gate‑2 calibration suites and the **likelihood convention** used by the Gate‑2 GR \(H_0\) control:
@@ -309,6 +326,8 @@ We reran the standard popZ+mass SBC stress test with the only material change be
   `pop_z_mode=comoving_uniform`, `pop_mass_mode=powerlaw_peak_q_smooth`,
   `inj_sampling_pdf_dist=log_dL`, `inj_sampling_pdf_mass_frame=detector`, `inj_sampling_pdf_mass_scale=linear`,
   `det_model=snr_mchirp_q_binned` with `mchirp_binned_nbins=20`, `q_binned_nbins=10`, `snr_binned_nbins=200`.
+
+**2026‑02‑05 note:** a later wide‑grid “real‑data config” SBC reproduction on the *same injection file* found the mass-frame convention is a dominant lever: `inj_sampling_pdf_mass_frame=detector` failed badly on \(H_0\in[40,200]\), while `source` materially improved calibration (see `FINDINGS/gate2_sbc_injpdf_massframe_ab_20260205.md`). Treat the `detector` setting above as **suite‑specific**, not a general recommendation.
 
 Aggregate (selection‑ON) SBC metrics from `tables/suite_aggregate.json`:
 
