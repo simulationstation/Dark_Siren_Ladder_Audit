@@ -363,6 +363,7 @@ def _recompute_posterior_from_events(
         "H0_map": H0_map,
         "H0_edge": edge,
         "summary": summary,
+        "posterior": p,
         "slope_event": slope_event,
         "slope_sel": slope_sel,
         "slope_total": slope_total,
@@ -371,6 +372,17 @@ def _recompute_posterior_from_events(
         "delta_total": delta_total,
         "exp_event_per_event": exp_event_per_event,
     }
+
+
+def _kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
+    p = _normalize_prob(np.asarray(p, dtype=float))
+    q = _normalize_prob(np.asarray(q, dtype=float))
+    if p.shape != q.shape:
+        raise ValueError("KL divergence requires matching shapes.")
+    # Clip to avoid log(0).
+    p = np.clip(p, 1e-300, 1.0)
+    q = np.clip(q, 1e-300, 1.0)
+    return float(np.sum(p * (np.log(p) - np.log(q))))
 
 
 def _scan_gate2_jsons(outputs_dir: Path) -> list[Path]:
@@ -414,6 +426,11 @@ def main() -> int:
     ap_scan.add_argument("--outputs", type=Path, default=Path("outputs"), help="Outputs dir to scan (default outputs/).")
     ap_scan.add_argument("--out", type=Path, default=Path("FINDINGS") / "gate2_jig.csv", help="CSV to write (default FINDINGS/gate2_jig.csv).")
     ap_scan.add_argument("--relative-to", type=Path, default=Path("."), help="Base path for relative paths in CSV (default repo root).")
+
+    ap_jk = sub.add_parser("jackknife", help="Leave-one-event-out influence scan; writes a CSV.")
+    ap_jk.add_argument("--json", type=Path, required=True, help="Path to a gr_h0_selection_*.json file (must include per-event logL_H0 arrays).")
+    ap_jk.add_argument("--out", type=Path, default=Path("FINDINGS") / "gate2_jackknife.csv", help="CSV to write (default FINDINGS/gate2_jackknife.csv).")
+    ap_jk.add_argument("--relative-to", type=Path, default=Path("."), help="Base path for relative json_path in CSV (default repo root).")
 
     args = ap.parse_args()
 
@@ -561,6 +578,72 @@ def main() -> int:
                     "exp_event_per_event": s.exp_event_per_event,
                 }
             )
+        _write_csv(rows, Path(args.out))
+        print(f"[gate2_jig] wrote {args.out} ({len(rows)} rows)")
+        return 0
+
+    if args.cmd == "jackknife":
+        path = Path(args.json).expanduser().resolve()
+        d = _read_json(path)
+        H0_grid, recs = _event_records_from_gate2_json(d)
+        log_alpha_grid = None
+        if d.get("log_alpha_grid") is not None:
+            log_alpha_grid = _as_float_array(d.get("log_alpha_grid"), name="log_alpha_grid")
+
+        rel = Path(args.relative_to).expanduser().resolve()
+
+        logH = np.log(np.clip(H0_grid, 1e-300, np.inf))
+        for r in recs:
+            ll = np.asarray(r["logL_H0"], dtype=float)
+            r["b"] = _slope(ll, logH)
+            r["H0_map_ev"] = float(H0_grid[int(np.argmax(ll))])
+
+        base = _recompute_posterior_from_events(H0_grid=H0_grid, events=list(recs), log_alpha_grid=log_alpha_grid)
+        base_summary = base.get("summary", {}) or {}
+        p_base = np.asarray(base.get("posterior"), dtype=float)
+
+        def _relpath(p: Path) -> str:
+            try:
+                return str(p.resolve().relative_to(rel))
+            except Exception:
+                return str(p)
+
+        rows: list[dict[str, Any]] = []
+        for drop in recs:
+            kept = [r for r in recs if r is not drop]
+            if not kept:
+                continue
+            res = _recompute_posterior_from_events(H0_grid=H0_grid, events=kept, log_alpha_grid=log_alpha_grid)
+            s = res.get("summary", {}) or {}
+            p_loo = np.asarray(res.get("posterior"), dtype=float)
+            rows.append(
+                {
+                    "json_path": _relpath(path),
+                    "dropped_event": str(drop.get("event", "")),
+                    "drop_ess_min": float(drop.get("ess_min", float("nan"))),
+                    "drop_finite_frac": float(drop.get("finite_frac", float("nan"))),
+                    "drop_b": float(drop.get("b", float("nan"))),
+                    "drop_H0_map_ev": float(drop.get("H0_map_ev", float("nan"))),
+                    "base_n_events": int(base.get("n_events", -1)),
+                    "loo_n_events": int(res.get("n_events", -1)),
+                    "base_H0_map": float(base.get("H0_map", float("nan"))),
+                    "loo_H0_map": float(res.get("H0_map", float("nan"))),
+                    "delta_H0_map": float(res.get("H0_map", float("nan")) - float(base.get("H0_map", float("nan")))),
+                    "base_p50": float(base_summary.get("p50", float("nan"))),
+                    "loo_p50": float(s.get("p50", float("nan"))),
+                    "delta_p50": float(s.get("p50", float("nan")) - float(base_summary.get("p50", float("nan")))),
+                    "base_mean": float(base_summary.get("mean", float("nan"))),
+                    "loo_mean": float(s.get("mean", float("nan"))),
+                    "delta_mean": float(s.get("mean", float("nan")) - float(base_summary.get("mean", float("nan")))),
+                    "base_sd": float(base_summary.get("sd", float("nan"))),
+                    "loo_sd": float(s.get("sd", float("nan"))),
+                    "delta_sd": float(s.get("sd", float("nan")) - float(base_summary.get("sd", float("nan")))),
+                    "kl_base_to_loo": _kl_divergence(p_base, p_loo),
+                }
+            )
+
+        # Sort rows by |delta_p50| descending for convenience.
+        rows.sort(key=lambda r: abs(float(r.get("delta_p50", 0.0))), reverse=True)
         _write_csv(rows, Path(args.out))
         print(f"[gate2_jig] wrote {args.out} ({len(rows)} rows)")
         return 0

@@ -116,6 +116,14 @@ Or recompute the posterior after dropping/thresholding events (useful to diagnos
   --out FINDINGS/gate2_filter.csv
 ```
 
+Or run a leave-one-out influence scan (which events move the posterior the most):
+
+```bash
+./.venv/bin/python scripts/gate2_jig.py jackknife \
+  --json outputs/<RUN>/json/gr_h0_selection_on_inv_sampling_pdf.json \
+  --out FINDINGS/gate2_jackknife.csv
+```
+
 ## Gate‑2 ladder (toy cancellation + incremental complexity)
 
 To avoid “eternal knob turning”, `scripts/run_siren_gate2_ladder.py` runs:
