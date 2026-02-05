@@ -100,6 +100,8 @@ To diagnose why Gate‑2 \(H_0\) posteriors slam into grid edges, use the Gate�
   --top-n 10
 ```
 
+Interpretation note (real data): `2-3-G/gate2_realdata_diagnosis.md`
+
 Or scan all Gate‑2 outputs into a summary CSV:
 
 ```bash
