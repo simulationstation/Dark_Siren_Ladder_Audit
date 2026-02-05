@@ -233,7 +233,7 @@ def _build_derangement_map(items: list[str], *, seed: int, salt: str) -> dict[st
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Spectral siren isolator battery (hierarchical PE + mechanism-killing scrambles).")
+    ap = argparse.ArgumentParser(description="Spectral siren isolator battery (hierarchical PE + mechanism-nulling scrambles).")
     ap.add_argument("--run-dir", required=True, help="Finished EM reconstruction dir (contains samples/mu_forward_posterior.npz).")
     ap.add_argument(
         "--pe-cache-dir",

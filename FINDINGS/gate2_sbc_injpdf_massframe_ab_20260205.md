@@ -7,7 +7,7 @@ This note records a short A/B sweep that isolates a **major** source of Gate‑2
 We ran the closed‑loop suite:
 
 - runner: `scripts/run_siren_injection_recovery_suite.py`
-- injections: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5`
+- injections: `data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_o3b.hdf5`
 - IFAR threshold: `1.0 yr`
 - truth policy: `H0_true ~ Uniform[40,200]` (SBC)
 - inference grid: `H0 ∈ [40,200]` (161 points)
@@ -68,4 +68,3 @@ Switching to **source‑frame** mass interpretation is a **first‑order** impro
 ## Still not “passed”
 
 Even with the corrected mass-frame convention, the selection‑ON SBC is **not yet nominal** over \(H_0\in[40,200]\) (coverage is low and \(u\) is not uniform). This indicates at least one additional mismatch remains (population+selection bookkeeping, proxy limitations, or generator/inference mismatch) that needs further isolation.
-

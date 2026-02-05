@@ -128,7 +128,7 @@ This is the most likely lever to fix the edge-peaking behavior on real data by r
 
 We are **spectral-only**, so nulls should target distance–redshift consistency mechanisms, not host association.
 
-Add nulls that actually destroy spectral information:
+Add nulls that actually remove spectral information:
 - cross-event swaps of \((d_L,\mathcal{M})\) samples,
 - prior-resample nulls using the PE prior,
 - redshift scrambling under the population prior,
@@ -158,5 +158,5 @@ Once Gate‑2 passes and selection is self-consistent:
 We are “ready” when:
 - Gate‑2 (GR \(H_0\) selection-on) is interior-peaked and injection-recovery is unbiased across realistic grids,
 - selection modeling is consistent (same population assumptions across PE de-prior, population prior, and injections),
-- matched nulls reliably kill ghost mechanisms,
+- matched nulls reliably null out ghost mechanisms,
 - only then we interpret anything as an astrophysical/cosmological statement.

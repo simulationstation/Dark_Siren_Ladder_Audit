@@ -19,7 +19,7 @@ not intended as final production results.
 
 ---
 
-## 1) Catalog mode (PE hist + GLADE+): rotation null does **not** kill the score
+## 1) Catalog mode (PE hist + GLADE+): rotation null does **not** erase the score
 
 Event: `GW200220_061928`
 

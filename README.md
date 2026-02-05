@@ -30,7 +30,7 @@ Then you can compare `alpha(H0)` computed with our distance cache vs wcosmo vs I
 
 ```bash
 ./.venv/bin/python scripts/run_oracle_alpha_h0_compare.py \
-  --injection-file data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5 \
+  --injection-file data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_o3b.hdf5 \
   --plot
 ```
 
@@ -42,7 +42,7 @@ Some injection releases define `sampling_pdf` in coordinates other than `(z, m_s
 - `--inj-sampling-pdf-mass-frame {source,detector}`
 - `--inj-sampling-pdf-mass-scale {linear,log}`
 
-For the O3 sensitivity mixture injection file above (`endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5`), A/B SBC sweeps show **strong sensitivity** to the injection `sampling_pdf` mass-measure convention. The current best-performing convention in closed loop is:
+For the O3 sensitivity mixture injection file above (`o3_sensitivity_mixture_o3b.hdf5`), A/B SBC sweeps show **strong sensitivity** to the injection `sampling_pdf` mass-measure convention. The current best-performing convention in closed loop is:
 
 ```bash
 --inj-sampling-pdf-dist log_dL --inj-sampling-pdf-mass-frame source --inj-sampling-pdf-mass-scale linear
@@ -80,7 +80,7 @@ To propagate a basic finite-injection uncertainty model for the selection factor
 ```bash
 ./.venv/bin/python scripts/run_siren_gate2_gr_h0_selection_uncertainty.py \
   --gate2-json outputs/<RUN>/json/gr_h0_selection_on_inv_sampling_pdf.json \
-  --selection-injections-hdf data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5 \
+  --selection-injections-hdf data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_o3b.hdf5 \
   --save-alpha-draws-npz
 ```
 
@@ -142,7 +142,7 @@ To run a larger *resumable* injection-recovery suite and add an SBC-style check 
 
 ```bash
 ./.venv/bin/python scripts/run_siren_injection_recovery_suite.py \
-  --selection-injections-hdf data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5 \
+  --selection-injections-hdf data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_o3b.hdf5 \
   --h0-min 40 --h0-max 100 --h0-n 121 \
   --h0-true-mode uniform \
   --n-events 25 --n-rep 64
@@ -299,10 +299,10 @@ All runs below use the same 33-event set and PE cache as `M0_start202` and the s
 (`comoving_uniform + powerlaw_peak_q_smooth`) while swapping the selection-injection source.
 
 Injection sources tested:
-- Baseline O3b segment: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5`
+- Baseline O3b segment: `data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_o3b.hdf5`
 - GWTC-3 O3a BBHpop injection set: `data/cache/gw/zenodo/11254021/extracted/GWTC-3-population-data/injections/o3a_bbhpop_inj_info.hdf`
-- Full O3 sensitivity file: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12.hdf5`
-- O3a sensitivity segment: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1238166018-15843600.hdf5`
+- Full O3 sensitivity file: `data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_full.hdf5`
+- O3a sensitivity segment: `data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_o3a.hdf5`
 
 Result (robust across all injection swaps):
 - \(\Delta \mathrm{LPD}_{\rm data} \approx -2.45\) to \(-2.66\) (data term prefers GR)

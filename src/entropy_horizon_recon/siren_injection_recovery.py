@@ -179,7 +179,7 @@ def infer_z_max_for_h0_grid_closed_loop(
 
       z_eval = f^{-1}((H0_eval/H0_true) f(z)).
 
-    If a Gate‑2 control uses a hard population cutoff z_max < z_eval, it will artificially kill support at
+    If a Gate‑2 control uses a hard population cutoff z_max < z_eval, it will artificially truncate support at
     high H0 and can induce QC-driven biases (e.g. by skipping “partial support” events).
 
     This helper computes the bound at z=z_gen_max using a temporary inversion cache up to z_cap.

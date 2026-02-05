@@ -67,7 +67,7 @@ If the full closed-loop generator + inference are self-consistent and \(H_0^\sta
 ## Key results
 
 All runs below used:
-- O3b sensitivity injections: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5`
+- O3b sensitivity injections: `data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_o3b.hdf5`
 - \(H_0\in[40,100]\) with 121 grid points, `z_max=0.62`
 - 64 replicates × 25 detected events/replicate
 - `pe_synth_mode=likelihood_resample`, `pe_obs_mode=noisy`, `pe_n_samples=12000`

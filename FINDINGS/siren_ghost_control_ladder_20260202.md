@@ -17,14 +17,14 @@ Empirically, we see:
 
 - \(\Delta \mathrm{LPD}_{\rm data} < 0\) (the **data term prefers GR** on average).
 - \(\Delta \mathrm{LPD}_{\rm sel} > 0\) (the **selection term** boosts \(\mu\) because \(\alpha_\mu < \alpha_{\rm GR}\)).
-- Mechanism-killing nulls that remove distance information drive \(\Delta \mathrm{LPD}_{\rm data}\to 0\) but **do not** eliminate \(\Delta \mathrm{LPD}_{\rm tot}\).
+- Mechanism-nulling tests that remove distance information drive \(\Delta \mathrm{LPD}_{\rm data}\to 0\) but **do not** eliminate \(\Delta \mathrm{LPD}_{\rm tot}\).
 - Plausible, “more correct” selection implementations (injection sampling-pdf weighting; detectability distance ablations) can **remove or flip** the sign of \(\Delta \mathrm{LPD}_{\rm tot}\).
 
 This combination is the textbook signature of a **selection/population “ghost”** rather than a propagation signal.
 
 ## What was run
 
-### Gate 4 (mechanism-killing null suite)
+### Gate 4 (mechanism-nulling suite)
 
 Runner: `scripts/run_siren_isolator.py` (module `src/entropy_horizon_recon/siren_isolator.py`).
 
@@ -204,7 +204,7 @@ As usual, the `mu_det_distance=em` ablations collapse \(\Delta \mathrm{LPD}_{\rm
 Interpretation: even after making Gate‑2 stable, the “mu preference” remains explainable as **selection-model behavior** rather than
 an actual improvement in the GW-data fit. This is exactly the ghost mechanism we are isolating.
 
-### Gate 4 update (2026-02-02): correlation‑killing PE scrambles (spectral-only)
+### Gate 4 update (2026-02-02): correlation‑breaking PE scrambles (spectral-only)
 
 To check whether the **data term** preference is coming from a specific *joint* correlation in the PE posterior
 (e.g. \(d_L\)–mass coupling), we ran an extended scramble suite under the same “Gate‑2 consistent” population+selection
@@ -226,7 +226,7 @@ Key totals (33 events, 512 draws; selection vectors from `selection_alpha_thr_in
 - `prior_dL`: \(\Delta\mathrm{LPD}_{\rm data}=-0.249\) (≈0), \(\Delta\mathrm{LPD}_{\rm tot}=+9.677\)
 
 Interpretation:
-- The **data term** preference for GR is **stable** to these correlation-killing scrambles (it stays \(\approx -2.6\)).
+- The **data term** preference for GR is **stable** to these correlation-breaking scrambles (it stays \(\approx -2.6\)).
 - The large positive totals are therefore not coming from a fragile \(d_L\)–mass correlation in PE; they remain
   explainable as **selection behavior**.
 - Under `prior_dL`, the data term collapses toward 0 as expected, yet the total becomes *even more* positive. This is a

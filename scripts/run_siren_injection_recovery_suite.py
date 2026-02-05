@@ -347,6 +347,14 @@ def main() -> int:
         help="Synthetic PE likelihood center: 'truth' or a noisy draw around truth (default noisy).",
     )
     ap.add_argument(
+        "--pe-obs-condition-on-detection",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="If --pe-obs-mode=noisy, condition the synthetic distance observation on detection (Malmquist-like truncation). "
+        "This is required for selection-on-data-style bookkeeping (p_det only via alpha); turn off for selection-on-theta-style tests (p_det included in event term). "
+        "(default True).",
+    )
+    ap.add_argument(
         "--pe-synth-mode",
         choices=["naive_gaussian", "prior_resample", "likelihood_resample"],
         default="likelihood_resample",
@@ -486,6 +494,7 @@ def main() -> int:
         selection_include_h0_volume_scaling=bool(args.selection_include_h0_volume_scaling),
         include_pdet_in_event_term=bool(args.include_pdet_in_event_term),
         pe_obs_mode=str(args.pe_obs_mode),  # type: ignore[arg-type]
+        pe_obs_condition_on_detection=bool(args.pe_obs_condition_on_detection),
         pe_n_samples=int(args.pe_n_samples),
         pe_synth_mode=str(args.pe_synth_mode),  # type: ignore[arg-type]
         pe_prior_resample_n_candidates=int(args.pe_prior_resample_n_candidates),

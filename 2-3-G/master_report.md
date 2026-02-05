@@ -90,7 +90,7 @@ Event set size:
 
 We computed selection normalization proxies from an O3 search-sensitivity injection summary (LIGO-T2100113 style):
 
-- `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5`
+- `data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_o3b.hdf5`
   - IFAR-found threshold: **1 year**
   - Selection z window: **z_max = 0.62**
   - Injections used after cuts/weights (this run): **415,992**
@@ -207,7 +207,7 @@ We report an **effective selection contribution** as:
 
 Important nuance: because totals use `logmeanexp`, \(\Delta\mathrm{LPD}_{\rm sel}\) is not a strictly additive decomposition of independent terms; it’s a useful diagnostic summary of “how much the selection correction moves the answer.”
 
-### 4) Scramble modes (mechanism-killing nulls)
+### 4) Scramble modes (mechanism-nulling tests)
 
 We ran the isolator with four scramble modes:
 
@@ -216,7 +216,7 @@ We ran the isolator with four scramble modes:
 - `shuffle_mass` (permute the paired (Mc_det,q) samples within an event, along with their priors)
 - `shuffle_dL_mass` (apply both shuffles)
 
-These preserve the **marginals** while killing specific **correlations** in the PE posterior.
+These preserve the **marginals** while breaking specific **correlations** in the PE posterior.
 
 ## How the test was executed (repro commands)
 
@@ -228,7 +228,7 @@ The workcycle runs two scripts:
 ./.venv/bin/python scripts/run_siren_selection_alpha.py \
   --run-dir outputs/finalization/highpower_multistart_v2/M0_start202 \
   --from-dark-siren-summary outputs/dark_siren_bigtests_20260202_013848UTC/hier_battery/hierarchical/summary_M0_start202.json \
-  --selection-injections-hdf data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5 \
+  --selection-injections-hdf data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_o3b.hdf5 \
   --selection-ifar-thresh-yr 1.0 \
   --selection-z-max 0.62 \
   --convention A \
@@ -361,7 +361,7 @@ So the ghost persists: the selection normalization is still the lever that can f
 
 ## Addendum (2026-02-04) — Decisive robustness checks + controlled synthetic reproduction
 
-This section documents the “stop beating the dead horse” checks: swap injection sources, anchor population hyperparameters to LVK hyperposterior draws, and reproduce the sign flip in a synthetic where GR is true.
+This section documents the “stop repeating the same checks” battery: swap injection sources, anchor population hyperparameters to LVK hyperposterior draws, and reproduce the sign flip in a synthetic where GR is true.
 
 All decisive-check results in one place:
 - `2-3-G/decisive_checks_summary.csv`
@@ -372,10 +372,10 @@ All decisive-check results in one place:
 ### A) Injection file / segment swaps (real data)
 
 We re-ran the selection alpha + isolator (mode=`none`) while swapping the selection-injection source:
-- O3b sensitivity segment (baseline): `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1256655642-12905976.hdf5`
+- O3b sensitivity segment (baseline): `data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_o3b.hdf5`
 - GWTC-3 O3a BBHpop injection set: `data/cache/gw/zenodo/11254021/extracted/GWTC-3-population-data/injections/o3a_bbhpop_inj_info.hdf`
-- Full O3 sensitivity file: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12.hdf5`
-- O3a sensitivity segment: `data/cache/gw/zenodo/7890437/endo3_mixture-LIGO-T2100113-v12-1238166018-15843600.hdf5`
+- Full O3 sensitivity file: `data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_full.hdf5`
+- O3a sensitivity segment: `data/cache/gw/zenodo/7890437/o3_sensitivity_mixture_o3a.hdf5`
 
 Outcome: the same sign structure holds across all swaps:
 - \(\Delta \mathrm{LPD}_{\rm data} < 0\) (data prefers GR),

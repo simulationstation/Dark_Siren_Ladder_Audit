@@ -47,7 +47,7 @@ def apply_hierarchical_pe_scramble(
 ) -> GWTCPeHierarchicalSamples:
     """Return a scrambled copy of hierarchical PE samples.
 
-    The intent is to preserve the *marginals* of the scrambled coordinates while killing specific
+    The intent is to preserve the *marginals* of the scrambled coordinates while breaking specific
     correlations in the joint posterior, without breaking the required PE prior-division pairing:
     each permuted coordinate is permuted alongside its corresponding log π_PE array.
     """
